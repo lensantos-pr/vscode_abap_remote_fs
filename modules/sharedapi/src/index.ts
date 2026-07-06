@@ -51,6 +51,29 @@ export interface OAuthOnPremConfig {
   scope?: string
 }
 
+/** Browser SSO configuration (when authMethod === "browser_sso"). */
+export interface BrowserSsoConfig {
+  /**
+   * How cookies are captured:
+   *  - "auto"   — Playwright drives an installed browser and harvests the SAP
+   *               session cookies automatically after the SAML chain completes;
+   *               transparently falls back to "manual" if playwright-core or the
+   *               chosen browser channel is unavailable. (default)
+   *  - "manual" — the localhost helper page where the user pastes cookies.
+   */
+  mode?: "auto" | "manual"
+  /** Installed browser channel Playwright should drive (no browser download). */
+  channel?: "msedge" | "chrome" | "chromium"
+  /** Persistent user-data dir so SSO state survives between logins (silent re-auth). */
+  profileDir?: string
+  /** Run the browser headless. Default false — interactive IdP login usually needs a window. */
+  headless?: boolean
+  /** Max time to wait for the SAML redirect chain to land, in ms (default 120000). */
+  timeoutMs?: number
+  /** Extra exact cookie names to harvest beyond the SAP defaults (SAP_SESSIONID prefix, MYSAPSSO2, sap-usercontext). */
+  cookieNames?: string[]
+}
+
 /** HTTP headers forwarded from the extension host to the language server. */
 export type AuthHttpHeaders = Readonly<Record<string, string>>
 
@@ -83,6 +106,8 @@ export interface ClientConfiguration {
   kerberosAuth?: KerberosAuthConfig
   /** On-premise OAuth config (only when authMethod === "oauth_onprem"). */
   oauthOnPrem?: OAuthOnPremConfig
+  /** Browser SSO config (only when authMethod === "browser_sso"). */
+  browserSso?: BrowserSsoConfig
   oauth?: {
     clientId: string
     clientSecret: string

@@ -25,7 +25,9 @@ import { AuthResult } from "./types"
 import { PasswordVault, log } from "../lib"
 import { formatKey } from "../config"
 import * as vscode from "vscode"
-import { buildCookieHeaders, sanitizeCookie, toStringArray } from "./utils"
+import { buildCookieHeaders, errorMessage, sanitizeCookie, toStringArray } from "./utils"
+import { capturePlaywrightCookies, PlaywrightUnavailableError } from "./playwrightSso"
+import type { BrowserSsoConfig } from "vscode-abap-remote-fs-sharedapi"
 
 const VAULT_SERVICE = "vscode.abapfs.browsersso"
 
@@ -45,10 +47,15 @@ function getListeningPort(server: http.Server): number {
   return address.port
 }
 
-function captureCookiesOnce(connId: string, loginUrl: string): Promise<string[]> {
+function captureCookiesOnce(
+  connId: string,
+  sapUrl: string,
+  sapClient: string,
+  config?: BrowserSsoConfig
+): Promise<string[]> {
   let pending = captureLocks.get(connId)
   if (!pending) {
-    pending = startCookieCaptureServer(loginUrl, 120_000, vscodeSsoNotify)
+    pending = acquireCookies(connId, sapUrl, sapClient, config)
       .then(async cookies => {
         await storeSsoCookies(connId, cookies)
         return cookies
@@ -57,6 +64,36 @@ function captureCookiesOnce(connId: string, loginUrl: string): Promise<string[]>
     captureLocks.set(connId, pending)
   }
   return pending
+}
+
+/**
+ * Acquire cookies for a connection. Unless `mode` is "manual", try the
+ * Playwright automated harvest first and transparently fall back to the
+ * localhost paste helper if Playwright/the browser is unavailable or the
+ * automated flow yields nothing.
+ */
+async function acquireCookies(
+  connId: string,
+  sapUrl: string,
+  sapClient: string,
+  config?: BrowserSsoConfig
+): Promise<string[]> {
+  const loginUrl = `${sapUrl}/sap/bc/adt/discovery?sap-client=${encodeURIComponent(sapClient)}`
+  const mode = config?.mode ?? "auto"
+
+  if (mode !== "manual") {
+    try {
+      log.debug(`[browser-sso] Attempting automated (Playwright) SSO for ${connId}`)
+      const cookies = await capturePlaywrightCookies(sapUrl, sapClient, config)
+      if (cookies.length > 0) return cookies
+      log.debug(`[browser-sso] Automated SSO returned no cookies for ${connId}; using manual capture`)
+    } catch (e) {
+      const why = e instanceof PlaywrightUnavailableError ? "unavailable" : "failed"
+      log.debug(`[browser-sso] Automated SSO ${why} for ${connId}: ${errorMessage(e)}; using manual capture`)
+    }
+  }
+
+  return startCookieCaptureServer(loginUrl, config?.timeoutMs ?? 120_000, vscodeSsoNotify)
 }
 
 /** Store SSO cookies securely (with timestamp). */
@@ -249,14 +286,14 @@ function vscodeSsoNotify(helperUrl: string) {
 export async function buildBrowserSsoAuth(
   connId: string,
   sapUrl: string,
-  sapClient: string
+  sapClient: string,
+  config?: BrowserSsoConfig
 ): Promise<AuthResult> {
   log.debug(`[browser-sso] buildBrowserSsoAuth starting for ${connId}`)
   let cookies = await getSsoCookies(connId)
   if (cookies.length === 0) {
     log.debug(`[browser-sso] No cached cookies, starting cookie capture for ${connId}`)
-    const loginUrl = `${sapUrl}/sap/bc/adt/discovery?sap-client=${encodeURIComponent(sapClient)}`
-    cookies = await captureCookiesOnce(connId, loginUrl)
+    cookies = await captureCookiesOnce(connId, sapUrl, sapClient, config)
   }
 
   const headers = buildCookieHeaders(cookies)
@@ -274,13 +311,13 @@ export async function buildBrowserSsoAuth(
 export async function refreshBrowserSsoAuth(
   connId: string,
   sapUrl: string,
-  sapClient: string
+  sapClient: string,
+  config?: BrowserSsoConfig
 ): Promise<AuthResult> {
   log.debug(`[browser-sso] refreshBrowserSsoAuth starting for ${connId}`)
   await clearSsoCookies(connId)
   captureLocks.delete(connId)
-  const loginUrl = `${sapUrl}/sap/bc/adt/discovery?sap-client=${encodeURIComponent(sapClient)}`
-  const cookies = await captureCookiesOnce(connId, loginUrl)
+  const cookies = await captureCookiesOnce(connId, sapUrl, sapClient, config)
 
   const headers = buildCookieHeaders(cookies)
 

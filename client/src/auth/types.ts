@@ -20,6 +20,7 @@ import type { AuthHttpHeaders, AuthMethod } from "vscode-abap-remote-fs-sharedap
 export type {
   AuthMethod,
   AuthHttpHeaders,
+  BrowserSsoConfig,
   CertAuthConfig,
   CertAuthTransport,
   KerberosAuthConfig,

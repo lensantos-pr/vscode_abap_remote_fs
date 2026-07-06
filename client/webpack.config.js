@@ -31,7 +31,10 @@ const config = {
   devtool: "source-map",
   externals: {
     vscode: "commonjs vscode", // the vscode-module is created on-the-fly and must be excluded. Add other modules that cannot be webpack'ed, 📖 -> https://webpack.js.org/configuration/externals/
-    "@playwright/mcp": "commonjs @playwright/mcp"
+    "@playwright/mcp": "commonjs @playwright/mcp",
+    // Optional dependency for automated browser SSO; required lazily at runtime
+    // and degrades gracefully to manual cookie capture when absent.
+    "playwright-core": "commonjs playwright-core"
   },
   resolve: {
     // support reading TypeScript and JavaScript files, 📖 -> https://github.com/TypeStrong/ts-loader

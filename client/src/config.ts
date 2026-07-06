@@ -266,7 +266,7 @@ export async function createAuthenticatedClient(conf: RemoteConfig): Promise<ADT
     }
     case "browser_sso": {
       log.debug(`[auth] Building browser SSO auth for ${conf.name}`)
-      const result = await buildBrowserSsoAuth(conf.name, conf.url, conf.client)
+      const result = await buildBrowserSsoAuth(conf.name, conf.url, conf.client, conf.browserSso)
       if (result.headers) sslconf.headers = { ...sslconf.headers, ...result.headers }
       const client = new ADTClient(
         conf.url,

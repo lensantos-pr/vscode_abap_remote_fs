@@ -9,11 +9,13 @@ export type {
   AuthMethod,
   AuthHttpHeaders,
   AuthResult,
+  BrowserSsoConfig,
   CertAuthConfig,
   CertAuthTransport,
   KerberosAuthConfig,
   OAuthOnPremConfig
 } from "./types"
+export { capturePlaywrightCookies, PlaywrightUnavailableError } from "./playwrightSso"
 export {
   buildCertAuth,
   storeCertPassphrase,

@@ -4263,6 +4263,56 @@
                     "clientId"
                   ]
                 },
+                "browserSso": {
+                  "type": "object",
+                  "description": "Browser SSO options (when authMethod is 'browser_sso'). By default an installed browser is driven via Playwright to harvest SAP session cookies automatically, falling back to manual cookie paste if Playwright/the browser is unavailable.",
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "auto",
+                        "manual"
+                      ],
+                      "markdownEnumDescriptions": [
+                        "Drive an installed browser via Playwright and harvest cookies automatically (falls back to manual)",
+                        "Show the localhost helper page and paste cookies from browser DevTools"
+                      ],
+                      "default": "auto",
+                      "description": "Cookie capture mode"
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "msedge",
+                        "chrome",
+                        "chromium"
+                      ],
+                      "default": "msedge",
+                      "description": "Installed browser channel Playwright should drive (no browser is downloaded)"
+                    },
+                    "profileDir": {
+                      "type": "string",
+                      "description": "Persistent browser profile directory so SSO state survives between logins (default: ~/.abapfs-sso-profile)"
+                    },
+                    "headless": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Run the browser headless (usually false — interactive IdP login needs a window)"
+                    },
+                    "timeoutMs": {
+                      "type": "number",
+                      "default": 120000,
+                      "description": "Max time to wait for the SAML redirect chain to complete, in milliseconds"
+                    },
+                    "cookieNames": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Extra exact cookie names to harvest beyond SAP_SESSIONID*/MYSAPSSO2/sap-usercontext"
+                    }
+                  }
+                },
                 "atcapprover": {
                   "type": "string",
                   "description": "Default ATC approver",

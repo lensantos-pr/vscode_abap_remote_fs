@@ -180,7 +180,7 @@ async function getAuthHeaders(connId: string): Promise<AuthHeadersResponse | und
       try {
         libLog.debug(`[langClient] getAuthHeaders: resolving browser_sso cookies for ${connId}`)
         const { buildBrowserSsoAuth, getSsoCookies } = await import("./auth/browserSso")
-        const result = await buildBrowserSsoAuth(connId, conn.url, conn.client)
+        const result = await buildBrowserSsoAuth(connId, conn.url, conn.client, conn.browserSso)
         if (result.headers) {
           libLog.debug(`[langClient] getAuthHeaders: browser_sso capture resolved for ${connId}`)
           return { httpHeaders: result.headers }
