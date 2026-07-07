@@ -114,8 +114,7 @@ export async function capturePlaywrightCookies(
     if (!page.url().includes("/sap/bc/adt/")) {
       await page
         .waitForURL(
-          url =>
-            url.toString().includes("/sap/bc/adt/") || url.toString().includes("/sap/saml2/"),
+          url => url.toString().includes("/sap/bc/adt/") || url.toString().includes("/sap/saml2/"),
           { timeout }
         )
         .catch(() => undefined)

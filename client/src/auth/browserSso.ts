@@ -86,10 +86,14 @@ async function acquireCookies(
       log.debug(`[browser-sso] Attempting automated (Playwright) SSO for ${connId}`)
       const cookies = await capturePlaywrightCookies(sapUrl, sapClient, config)
       if (cookies.length > 0) return cookies
-      log.debug(`[browser-sso] Automated SSO returned no cookies for ${connId}; using manual capture`)
+      log.debug(
+        `[browser-sso] Automated SSO returned no cookies for ${connId}; using manual capture`
+      )
     } catch (e) {
       const why = e instanceof PlaywrightUnavailableError ? "unavailable" : "failed"
-      log.debug(`[browser-sso] Automated SSO ${why} for ${connId}: ${errorMessage(e)}; using manual capture`)
+      log.debug(
+        `[browser-sso] Automated SSO ${why} for ${connId}: ${errorMessage(e)}; using manual capture`
+      )
     }
   }
 

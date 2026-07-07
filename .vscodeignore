@@ -23,6 +23,7 @@ server/**
 !server/dist/server.js
 client/dist/*.map
 client/node_modules/**
+!client/node_modules/playwright-core/**
 client/out/**
 client/package.json
 client/package-lock.json
