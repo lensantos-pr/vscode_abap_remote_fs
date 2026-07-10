@@ -6,8 +6,8 @@ import { LogOutPendingDebuggers } from "./debugger"
 import { SapSystemValidator } from "../services/sapSystemValidator"
 import { LocalFsProvider } from "../fs/LocalFsProvider"
 import { log } from "../lib"
-import { renewSession } from "./session"
-export { isAuthExpired, renewSession, retryOnExpiredSession } from "./session"
+import { recoverSession } from "./session"
+export { isAuthExpired, recoverSession, renewSession, retryOnExpiredSession } from "./session"
 export const ADTSCHEME = "adt"
 export const ADTURIPATTERN = /\/sap\/bc\/adt\//
 
@@ -19,6 +19,39 @@ const missing = (connId: string) => {
   return FileSystemError.FileNotFound(`No ABAP server defined for ${connId}`)
 }
 
+/**
+ * Forget everything cached for a connection so the next access builds it from scratch.
+ * The old client is logged out on a best-effort basis: its session is usually already dead.
+ */
+async function disposeConnection(connId: string) {
+  const client = clients.get(connId)
+  clients.delete(connId)
+  roots.delete(connId)
+  failedConnections.delete(connId)
+  if (client) {
+    await client.logout().catch(() => undefined)
+    if (client.statelessClone.loggedin) await client.statelessClone.logout().catch(() => undefined)
+  }
+}
+
+/** Discard the dead client and reconnect, which re-harvests the SSO cookies. */
+async function rebuildConnection(connId: string): Promise<boolean> {
+  await disposeConnection(connId)
+  try {
+    await create(connId)
+    log(`Rebuilt connection ${connId} with fresh credentials`)
+    return true
+  } catch (e) {
+    // Leave the maps empty rather than marking the connection permanently failed,
+    // so a later access is free to try again.
+    log(`Could not rebuild connection ${connId}: ${caughtMessage(e)}`)
+    await disposeConnection(connId)
+    return false
+  }
+}
+
+const caughtMessage = (e: any) => String(e?.message ?? e)
+
 // Collapses the burst of parallel 401s that VS Code produces when several
 // filesystem operations hit an expired session at once.
 const reauths = new Map<string, Promise<boolean>>()
@@ -28,16 +61,13 @@ export function reauthenticate(connId: string): Promise<boolean> {
   const pending = reauths.get(connId)
   if (pending) return pending
 
-  const client = clients.get(connId)
-  if (!client) return Promise.resolve(false)
-
-  const attempt = renewSession(client)
-    .then(() => {
-      log(`Renewed expired session for ${connId}`)
-      return true
+  const attempt = recoverSession(clients.get(connId), () => rebuildConnection(connId))
+    .then(ok => {
+      if (ok) log(`Recovered expired session for ${connId}`)
+      return ok
     })
     .catch(e => {
-      log(`Could not renew session for ${connId}: ${String(e?.message ?? e)}`)
+      log(`Could not recover session for ${connId}: ${caughtMessage(e)}`)
       return false
     })
   reauths.set(connId, attempt)
@@ -199,6 +229,11 @@ export async function disconnect() {
   await Promise.all([...main, ...clones, ...LogOutPendingDebuggers()])
   // Clear all failure states so reconnect is possible
   failedConnections.clear()
+  // Drop the cached clients and roots too. Without this, reconnecting silently reuses the
+  // client we just logged out: getOrCreateRoot short-circuits on the surviving root, and
+  // every later request fails with 401 until the window is reloaded.
+  clients.clear()
+  roots.clear()
   return
 }
 

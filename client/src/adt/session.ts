@@ -34,6 +34,30 @@ export async function renewSession(client: ADTClient): Promise<void> {
   if (!clone.loggedin) await clone.login()
 }
 
+/**
+ * Bring a connection back to life, cheapest option first.
+ *
+ * An ADTClient freezes its auth headers at construction, so renewing in place only helps
+ * when the stateful session lapsed but the SSO cookies are still good. Once the cookies
+ * themselves go stale — they carry a 30 minute TTL — login() keeps returning 401 no matter
+ * how often it is retried, and the only way forward is a new client built on freshly
+ * harvested cookies. That is what `rebuild` does, and why it is the fallback rather than
+ * the first move: it re-harvests through Playwright, which costs several seconds.
+ */
+export async function recoverSession(
+  client: ADTClient | undefined,
+  rebuild: () => Promise<boolean>
+): Promise<boolean> {
+  if (!client) return false
+  try {
+    await renewSession(client)
+    return true
+  } catch (e) {
+    if (!isAuthExpired(e)) throw e
+  }
+  return rebuild()
+}
+
 /** Run `op`, recovering from an expired session exactly once. */
 export async function retryOnExpiredSession<T>(
   op: () => Promise<T>,

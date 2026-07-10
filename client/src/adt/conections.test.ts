@@ -38,7 +38,7 @@ jest.mock("../lib", () => ({ log: jest.fn() }))
 jest.mock("abapfs", () => ({}))
 
 import { ADTSCHEME, ADTURIPATTERN, abapUri, getClient, getRoot, rootIsConnected } from "./conections"
-import { isAuthExpired, renewSession, retryOnExpiredSession } from "./session"
+import { isAuthExpired, recoverSession, renewSession, retryOnExpiredSession } from "./session"
 
 describe("ADTSCHEME", () => {
   it("is 'adt'", () => {
@@ -177,6 +177,53 @@ describe("renewSession", () => {
     const client = fakeClient(true)
     await renewSession(client as any)
     expect(client.statelessClone.login).not.toHaveBeenCalled()
+  })
+})
+
+describe("recoverSession", () => {
+  const fakeClient = (loginFails?: unknown) => {
+    const login = loginFails
+      ? jest.fn().mockRejectedValue(loginFails)
+      : jest.fn().mockResolvedValue(undefined)
+    return {
+      dropSession: jest.fn().mockResolvedValue(undefined),
+      login,
+      statelessClone: { loggedin: true, login: jest.fn().mockResolvedValue(undefined) }
+    }
+  }
+
+  it("returns false when the connection has no client", async () => {
+    const rebuild = jest.fn()
+    await expect(recoverSession(undefined, rebuild)).resolves.toBe(false)
+    expect(rebuild).not.toHaveBeenCalled()
+  })
+
+  it("reuses the existing credentials when only the stateful session lapsed", async () => {
+    const client = fakeClient()
+    const rebuild = jest.fn()
+    await expect(recoverSession(client as any, rebuild)).resolves.toBe(true)
+    // rebuilding re-harvests cookies through Playwright, so avoid it when unnecessary
+    expect(rebuild).not.toHaveBeenCalled()
+  })
+
+  it("rebuilds the client when the credentials themselves are stale", async () => {
+    const client = fakeClient({ status: 401 })
+    const rebuild = jest.fn().mockResolvedValue(true)
+    await expect(recoverSession(client as any, rebuild)).resolves.toBe(true)
+    expect(rebuild).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports failure when the rebuild also fails", async () => {
+    const client = fakeClient({ status: 401 })
+    const rebuild = jest.fn().mockResolvedValue(false)
+    await expect(recoverSession(client as any, rebuild)).resolves.toBe(false)
+  })
+
+  it("does not rebuild on a transport failure", async () => {
+    const client = fakeClient(new Error("getaddrinfo ENOTFOUND sap.example.com"))
+    const rebuild = jest.fn()
+    await expect(recoverSession(client as any, rebuild)).rejects.toThrow(/ENOTFOUND/)
+    expect(rebuild).not.toHaveBeenCalled()
   })
 })
 
