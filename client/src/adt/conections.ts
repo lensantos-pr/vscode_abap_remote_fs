@@ -6,6 +6,8 @@ import { LogOutPendingDebuggers } from "./debugger"
 import { SapSystemValidator } from "../services/sapSystemValidator"
 import { LocalFsProvider } from "../fs/LocalFsProvider"
 import { log } from "../lib"
+import { renewSession } from "./session"
+export { isAuthExpired, renewSession, retryOnExpiredSession } from "./session"
 export const ADTSCHEME = "adt"
 export const ADTURIPATTERN = /\/sap\/bc\/adt\//
 
@@ -15,6 +17,32 @@ const creations = new Map<string, Promise<void>>()
 
 const missing = (connId: string) => {
   return FileSystemError.FileNotFound(`No ABAP server defined for ${connId}`)
+}
+
+// Collapses the burst of parallel 401s that VS Code produces when several
+// filesystem operations hit an expired session at once.
+const reauths = new Map<string, Promise<boolean>>()
+
+/** Recover the session behind `connId`. Returns false when it cannot be restored. */
+export function reauthenticate(connId: string): Promise<boolean> {
+  const pending = reauths.get(connId)
+  if (pending) return pending
+
+  const client = clients.get(connId)
+  if (!client) return Promise.resolve(false)
+
+  const attempt = renewSession(client)
+    .then(() => {
+      log(`Renewed expired session for ${connId}`)
+      return true
+    })
+    .catch(e => {
+      log(`Could not renew session for ${connId}: ${String(e?.message ?? e)}`)
+      return false
+    })
+  reauths.set(connId, attempt)
+  attempt.finally(() => reauths.delete(connId))
+  return attempt
 }
 
 export const abapUri = (u?: Uri) => u?.scheme === ADTSCHEME && !LocalFsProvider.useLocalStorage(u)

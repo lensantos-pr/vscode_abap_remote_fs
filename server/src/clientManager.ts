@@ -205,6 +205,7 @@ export async function clientFromKey(key: string) {
       await refreshClient(key, conf)
       // as clients are stateful, they will expire, usually in 10 minutes. So we need to refresh them every 4 minutes
       setInterval(() => refreshClient(key, conf), 240000)
+      client = clients.get(key)
     }
   }
   return client
