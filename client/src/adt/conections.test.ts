@@ -38,7 +38,7 @@ jest.mock("../lib", () => ({ log: jest.fn() }))
 jest.mock("abapfs", () => ({}))
 
 import { ADTSCHEME, ADTURIPATTERN, abapUri, getClient, getRoot, rootIsConnected } from "./conections"
-import { isAuthExpired, recoverSession, renewSession, retryOnExpiredSession } from "./session"
+import { isAuthExpired } from "./session"
 
 describe("ADTSCHEME", () => {
   it("is 'adt'", () => {
@@ -143,128 +143,5 @@ describe("isAuthExpired", () => {
   })
 })
 
-describe("renewSession", () => {
-  const fakeClient = (cloneLoggedIn: boolean) => {
-    const statelessClone = { loggedin: cloneLoggedIn, login: jest.fn().mockResolvedValue(undefined) }
-    return {
-      dropSession: jest.fn().mockResolvedValue(undefined),
-      login: jest.fn().mockResolvedValue(undefined),
-      statelessClone
-    }
-  }
 
-  it("drops the dead session before logging back in", async () => {
-    const client = fakeClient(true)
-    await renewSession(client as any)
-    expect(client.dropSession).toHaveBeenCalledTimes(1)
-    expect(client.login).toHaveBeenCalledTimes(1)
-  })
 
-  it("still logs in when dropSession throws because the session is already gone", async () => {
-    const client = fakeClient(true)
-    client.dropSession.mockRejectedValue(new Error("session expired"))
-    await expect(renewSession(client as any)).resolves.toBeUndefined()
-    expect(client.login).toHaveBeenCalledTimes(1)
-  })
-
-  it("re-logs the stateless clone when it too was logged out", async () => {
-    const client = fakeClient(false)
-    await renewSession(client as any)
-    expect(client.statelessClone.login).toHaveBeenCalledTimes(1)
-  })
-
-  it("leaves a still-authenticated stateless clone alone", async () => {
-    const client = fakeClient(true)
-    await renewSession(client as any)
-    expect(client.statelessClone.login).not.toHaveBeenCalled()
-  })
-})
-
-describe("recoverSession", () => {
-  const fakeClient = (loginFails?: unknown) => {
-    const login = loginFails
-      ? jest.fn().mockRejectedValue(loginFails)
-      : jest.fn().mockResolvedValue(undefined)
-    return {
-      dropSession: jest.fn().mockResolvedValue(undefined),
-      login,
-      statelessClone: { loggedin: true, login: jest.fn().mockResolvedValue(undefined) }
-    }
-  }
-
-  it("returns false when the connection has no client", async () => {
-    const rebuild = jest.fn()
-    await expect(recoverSession(undefined, rebuild)).resolves.toBe(false)
-    expect(rebuild).not.toHaveBeenCalled()
-  })
-
-  it("reuses the existing credentials when only the stateful session lapsed", async () => {
-    const client = fakeClient()
-    const rebuild = jest.fn()
-    await expect(recoverSession(client as any, rebuild)).resolves.toBe(true)
-    // rebuilding re-harvests cookies through Playwright, so avoid it when unnecessary
-    expect(rebuild).not.toHaveBeenCalled()
-  })
-
-  it("rebuilds the client when the credentials themselves are stale", async () => {
-    const client = fakeClient({ status: 401 })
-    const rebuild = jest.fn().mockResolvedValue(true)
-    await expect(recoverSession(client as any, rebuild)).resolves.toBe(true)
-    expect(rebuild).toHaveBeenCalledTimes(1)
-  })
-
-  it("reports failure when the rebuild also fails", async () => {
-    const client = fakeClient({ status: 401 })
-    const rebuild = jest.fn().mockResolvedValue(false)
-    await expect(recoverSession(client as any, rebuild)).resolves.toBe(false)
-  })
-
-  it("does not rebuild on a transport failure", async () => {
-    const client = fakeClient(new Error("getaddrinfo ENOTFOUND sap.example.com"))
-    const rebuild = jest.fn()
-    await expect(recoverSession(client as any, rebuild)).rejects.toThrow(/ENOTFOUND/)
-    expect(rebuild).not.toHaveBeenCalled()
-  })
-})
-
-describe("retryOnExpiredSession", () => {
-  it("does not attempt recovery when the operation succeeds", async () => {
-    const recover = jest.fn()
-    await expect(retryOnExpiredSession(async () => "ok", recover)).resolves.toBe("ok")
-    expect(recover).not.toHaveBeenCalled()
-  })
-
-  it("recovers once and replays the operation after a 401", async () => {
-    const op = jest
-      .fn()
-      .mockRejectedValueOnce({ status: 401 })
-      .mockResolvedValueOnce("second try")
-    const recover = jest.fn().mockResolvedValue(true)
-    await expect(retryOnExpiredSession(op, recover)).resolves.toBe("second try")
-    expect(recover).toHaveBeenCalledTimes(1)
-    expect(op).toHaveBeenCalledTimes(2)
-  })
-
-  it("does not retry errors that are not expired sessions", async () => {
-    const op = jest.fn().mockRejectedValue(new Error("getaddrinfo ENOTFOUND host"))
-    const recover = jest.fn()
-    await expect(retryOnExpiredSession(op, recover)).rejects.toThrow(/ENOTFOUND/)
-    expect(recover).not.toHaveBeenCalled()
-    expect(op).toHaveBeenCalledTimes(1)
-  })
-
-  it("rethrows the original 401 when recovery fails", async () => {
-    const op = jest.fn().mockRejectedValue({ status: 401 })
-    const recover = jest.fn().mockResolvedValue(false)
-    await expect(retryOnExpiredSession(op, recover)).rejects.toMatchObject({ status: 401 })
-    expect(op).toHaveBeenCalledTimes(1)
-  })
-
-  it("retries only once, propagating a second failure", async () => {
-    const op = jest.fn().mockRejectedValue({ status: 401 })
-    const recover = jest.fn().mockResolvedValue(true)
-    await expect(retryOnExpiredSession(op, recover)).rejects.toMatchObject({ status: 401 })
-    expect(op).toHaveBeenCalledTimes(2)
-    expect(recover).toHaveBeenCalledTimes(1)
-  })
-})

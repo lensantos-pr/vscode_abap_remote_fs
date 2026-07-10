@@ -1,5 +1,5 @@
-import { getOrCreateRoot, reauthenticate } from "../adt/conections"
-import { isAuthExpired, retryOnExpiredSession } from "../adt/session"
+import { getOrCreateRoot, invalidateSession } from "../adt/conections"
+import { isAuthExpired } from "../adt/session"
 import {
   FileSystemError,
   FileChangeType,
@@ -118,26 +118,16 @@ export class FsProvider implements FileSystemProvider {
     )
   }
 
-  /**
-   * Read operations are idempotent, so a request that fails on an expired session
-   * can safely be replayed once the session has been renewed.
-   */
-  private withSessionRetry<T>(uri: Uri, op: () => Promise<T>): Promise<T> {
-    return retryOnExpiredSession(op, () => reauthenticate(uri.authority))
-  }
-
   public async stat(uri: Uri): Promise<FileStat> {
     // Local storage for .* files and template files
     if (LocalFsProvider.useLocalStorage(uri)) return this.localProvider.stat(uri)
     try {
-      return await this.withSessionRetry(uri, async () => {
-        const root = await getOrCreateRoot(uri.authority)
-        const node = await root.getNodeAsync(uri.path)
-        if (!node) throw FileSystemError.FileNotFound(uri)
-        if (isAbapFile(node) && !this.isOpenDirtyDocument(uri)) await node.stat()
-        if (isAbapFolder(node)) await node.refresh()
-        return node
-      })
+      const root = await getOrCreateRoot(uri.authority)
+      const node = await root.getNodeAsync(uri.path)
+      if (!node) throw FileSystemError.FileNotFound(uri)
+      if (isAbapFile(node) && !this.isOpenDirtyDocument(uri)) await node.stat()
+      if (isAbapFolder(node)) await node.refresh()
+      return node
     } catch (e) {
       // Don't log FileNotFound errors for method names/debug artifacts to reduce noise
       if (!(e instanceof FileSystemError && e.name === "FileNotFound (FileSystemError)"))
@@ -149,15 +139,13 @@ export class FsProvider implements FileSystemProvider {
   public async readFile(uri: Uri): Promise<Uint8Array> {
     if (LocalFsProvider.useLocalStorage(uri)) return this.localProvider.readFile(uri)
     try {
-      const buf = await this.withSessionRetry(uri, async () => {
-        const root = await getOrCreateRoot(uri.authority)
-        const node = await root.getNodeAsync(uri.path)
-        if (!isAbapFile(node)) return undefined
+      const root = await getOrCreateRoot(uri.authority)
+      const node = await root.getNodeAsync(uri.path)
+      if (isAbapFile(node)) {
         const contents = await node.read()
         openInGui(uri, node.object)
         return Buffer.from(contents)
-      })
-      if (buf) return buf
+      }
     } catch (error) {
       log.debug(`Error reading file ${uri?.toString()}\n${caughtToString(error)}`)
       // Reporting an authentication or transport failure as "Unavailable" hides the cause.
@@ -171,18 +159,16 @@ export class FsProvider implements FileSystemProvider {
     if (LocalFsProvider.useLocalStorage(uri)) return this.localProvider.readDirectory(uri)
 
     try {
-      return await this.withSessionRetry(uri, async () => {
-        const root = await getOrCreateRoot(uri.authority)
-        const node = await root.getNodeAsync(uri.path)
-        if (!isFolder(node)) throw FileSystemError.FileNotFound(uri)
-        if (isAbapFolder(node) && node.size === 0) await node.refresh()
-        const files: [string, FileType][] = [...node].map(i => [i.name, i.file.type])
-        if (uri.path === "/") {
-          const localfiles = await this.localProvider.readDirectory(uri)
-          return [...files, ...localfiles]
-        }
-        return files
-      })
+      const root = await getOrCreateRoot(uri.authority)
+      const node = await root.getNodeAsync(uri.path)
+      if (!isFolder(node)) throw FileSystemError.FileNotFound(uri)
+      if (isAbapFolder(node) && node.size === 0) await node.refresh()
+      const files: [string, FileType][] = [...node].map(i => [i.name, i.file.type])
+      if (uri.path === "/") {
+        const localfiles = await this.localProvider.readDirectory(uri)
+        return [...files, ...localfiles]
+      }
+      return files
     } catch (e) {
       log(`Error reading directory ${uri?.toString()}\n${caughtToString(e)}`)
       throw this.wrapHttpError(e, uri)
@@ -199,12 +185,16 @@ export class FsProvider implements FileSystemProvider {
   private wrapHttpError(e: unknown, uri: Uri): unknown {
     if (e instanceof FileSystemError) return e
     const msg = caughtToString(e)
-    // Reached only after a renewal attempt already failed, so the session is genuinely gone.
     // Never blame the password: cert, kerberos, browser_sso and oauth connections have none.
-    if (isAuthExpired(e))
+    // Drop the dead credentials rather than retrying with them — under browser_sso every request
+    // carrying a rejected cookie also carries a sentinel basic-auth password, which SAP records
+    // as a failed logon for the real user. Recovery is left to an explicit reconnect.
+    if (isAuthExpired(e)) {
+      invalidateSession(uri.authority)
       return FileSystemError.NoPermissions(
-        `Authentication failed for ${uri.authority} (HTTP 401). Your session or credentials expired — disconnect and reconnect.`
+        `Authentication failed for ${uri.authority} (HTTP 401). Your session expired — reconnect to sign in again.`
       )
+    }
     if (msg.includes("status code 403"))
       return FileSystemError.NoPermissions(
         `Access denied to ${uri.authority} (HTTP 403). Likely a proxy issue or ADT service (/sap/bc/adt) not activated in SICF — contact your Basis team.`

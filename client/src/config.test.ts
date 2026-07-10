@@ -38,7 +38,14 @@ const mockVault = {
 jest.mock("./lib", () => ({
   PasswordVault: {
     get: jest.fn(() => mockVault)
-  }
+  },
+  log: Object.assign(jest.fn(), { debug: jest.fn() })
+}))
+jest.mock("./auth", () => ({
+  buildCertAuth: jest.fn(),
+  buildKerberosAuth: jest.fn(),
+  buildBrowserSsoAuth: jest.fn(),
+  buildOAuthOnPremAuth: jest.fn()
 }))
 jest.mock("./oauth", () => ({ oauthLogin: jest.fn(() => undefined) }))
 jest.mock("./adt/conections", () => ({ ADTSCHEME: "adt" }))
@@ -64,6 +71,7 @@ import {
   validateNewConfigId,
   saveNewRemote,
   createClient,
+  createAuthenticatedClient,
   RemoteManager,
   RemoteConfig
 } from "./config"
@@ -273,6 +281,66 @@ describe("saveNewRemote", () => {
 })
 
 // ---- createClient -----------------------------------------------------------
+
+// A browser_sso connection has no password: the literal "browser-sso" sentinel is passed to
+// ADTClient, which sends it as HTTP basic auth. If the cookie harvest yields nothing, SAP sees
+// a wrong-password logon for the real user and counts it toward login/fails_to_user_lock.
+// So we must never build the client without cookies.
+describe("createAuthenticatedClient (browser_sso)", () => {
+  const ssoConf = () =>
+    ({
+      name: "dev",
+      url: "https://host:44300",
+      username: "user",
+      client: "100",
+      language: "EN",
+      authMethod: "browser_sso"
+    }) as any
+
+  beforeEach(() => jest.clearAllMocks())
+
+  test("refuses to build a client when the cookie harvest yields no headers", async () => {
+    const { buildBrowserSsoAuth } = require("./auth")
+    const { ADTClient } = require("abap-adt-api")
+    ;(buildBrowserSsoAuth as jest.Mock).mockResolvedValue({ passwordOrFetcher: "browser-sso" })
+
+    await expect(createAuthenticatedClient(ssoConf())).rejects.toThrow(/cookie/i)
+    // no client means no request, means no failed logon recorded against the SAP user
+    expect(ADTClient).not.toHaveBeenCalled()
+  })
+
+  test("builds the client when cookies were harvested", async () => {
+    const { buildBrowserSsoAuth } = require("./auth")
+    const { ADTClient } = require("abap-adt-api")
+    ;(buildBrowserSsoAuth as jest.Mock).mockResolvedValue({
+      passwordOrFetcher: async () => "",
+      headers: { Cookie: "SAP_SESSIONID_DR1_100=abc" }
+    })
+
+    await createAuthenticatedClient(ssoConf())
+    expect(ADTClient).toHaveBeenCalledTimes(1)
+    const sslconf = (ADTClient as jest.Mock).mock.calls[0][5]
+    expect(sslconf.headers).toMatchObject({ Cookie: "SAP_SESSIONID_DR1_100=abc" })
+  })
+
+  // ADTClient only sets its axios `auth` (HTTP basic) when the password is a string. Handing it
+  // an empty-token fetcher instead leaves `auth` undefined and the bearer falsy, so requests go
+  // out with the Cookie header alone — the shape leap-object-registry's ADT client uses in sso
+  // mode, and the reason a rejected cookie there costs no failed logon.
+  test("passes a token fetcher, never a string password, so no basic auth header is sent", async () => {
+    const { buildBrowserSsoAuth } = require("./auth")
+    const { ADTClient } = require("abap-adt-api")
+    ;(buildBrowserSsoAuth as jest.Mock).mockResolvedValue({
+      passwordOrFetcher: "browser-sso",
+      headers: { Cookie: "SAP_SESSIONID_DR1_100=abc" }
+    })
+
+    await createAuthenticatedClient(ssoConf())
+    const password = (ADTClient as jest.Mock).mock.calls[0][2]
+    expect(typeof password).toBe("function")
+    await expect(password()).resolves.toBe("")
+  })
+})
 
 describe("createClient", () => {
   test("creates an ADTClient for an http URL", () => {

@@ -6,8 +6,8 @@ import { LogOutPendingDebuggers } from "./debugger"
 import { SapSystemValidator } from "../services/sapSystemValidator"
 import { LocalFsProvider } from "../fs/LocalFsProvider"
 import { log } from "../lib"
-import { recoverSession } from "./session"
-export { isAuthExpired, recoverSession, renewSession, retryOnExpiredSession } from "./session"
+import { clearSsoCookies } from "../auth"
+export { isAuthExpired } from "./session"
 export const ADTSCHEME = "adt"
 export const ADTURIPATTERN = /\/sap\/bc\/adt\//
 
@@ -20,59 +20,28 @@ const missing = (connId: string) => {
 }
 
 /**
- * Forget everything cached for a connection so the next access builds it from scratch.
- * The old client is logged out on a best-effort basis: its session is usually already dead.
+ * Throw away everything cached for a connection whose credentials the server rejected.
+ *
+ * Retrying is not an option here. Under browser_sso the ADTClient carries the "browser-sso"
+ * sentinel as its basic-auth password, so any request made with a rejected cookie is recorded
+ * by SAP as a wrong-password logon for the real user and counts toward login/fails_to_user_lock.
+ * The stored cookies are dropped so the next connect harvests a fresh session rather than
+ * replaying the dead one, and the connection is marked failed so background filesystem calls
+ * stop hitting the server until the user reconnects.
  */
-async function disposeConnection(connId: string) {
+export function invalidateSession(connId: string): void {
   const client = clients.get(connId)
   clients.delete(connId)
   roots.delete(connId)
-  failedConnections.delete(connId)
-  if (client) {
-    await client.logout().catch(() => undefined)
-    if (client.statelessClone.loggedin) await client.statelessClone.logout().catch(() => undefined)
-  }
-}
 
-/** Discard the dead client and reconnect, which re-harvests the SSO cookies. */
-async function rebuildConnection(connId: string): Promise<boolean> {
-  await disposeConnection(connId)
-  try {
-    await create(connId)
-    log(`Rebuilt connection ${connId} with fresh credentials`)
-    return true
-  } catch (e) {
-    // Leave the maps empty rather than marking the connection permanently failed,
-    // so a later access is free to try again.
-    log(`Could not rebuild connection ${connId}: ${caughtMessage(e)}`)
-    await disposeConnection(connId)
-    return false
-  }
-}
+  void clearSsoCookies(connId).catch(() => undefined)
+  if (client) void client.logout().catch(() => undefined)
 
-const caughtMessage = (e: any) => String(e?.message ?? e)
-
-// Collapses the burst of parallel 401s that VS Code produces when several
-// filesystem operations hit an expired session at once.
-const reauths = new Map<string, Promise<boolean>>()
-
-/** Recover the session behind `connId`. Returns false when it cannot be restored. */
-export function reauthenticate(connId: string): Promise<boolean> {
-  const pending = reauths.get(connId)
-  if (pending) return pending
-
-  const attempt = recoverSession(clients.get(connId), () => rebuildConnection(connId))
-    .then(ok => {
-      if (ok) log(`Recovered expired session for ${connId}`)
-      return ok
-    })
-    .catch(e => {
-      log(`Could not recover session for ${connId}: ${caughtMessage(e)}`)
-      return false
-    })
-  reauths.set(connId, attempt)
-  attempt.finally(() => reauths.delete(connId))
-  return attempt
+  failedConnections.set(
+    connId,
+    `Session expired for ${connId}. Reconnect to sign in again.`
+  )
+  log(`Invalidated expired session for ${connId} — stored SSO cookies dropped`)
 }
 
 export const abapUri = (u?: Uri) => u?.scheme === ADTSCHEME && !LocalFsProvider.useLocalStorage(u)

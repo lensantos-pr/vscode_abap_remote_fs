@@ -45,6 +45,7 @@ import {
   getRoot,
   uriRoot,
   getOrCreateRoot,
+  clearConnectionFailure,
   disconnect
 } from "../adt/conections"
 import { isAbapFolder, isAbapFile, isAbapStat } from "abapfs"
@@ -247,6 +248,9 @@ export class AdtCommands {
       name = remote.name
 
       log(`Connecting to server ${remote.name}`)
+      // An explicit connect is the user asking us to try again, so drop any earlier failure
+      // that would otherwise short-circuit createIfMissing.
+      clearConnectionFailure(remote.name)
       // this might involve asking for a password...
       await getOrCreateRoot(remote.name) // if connection raises an exception don't mount any folder
 
@@ -282,10 +286,11 @@ export class AdtCommands {
 
       // HTTP errors with user-friendly messages
       if (errStr.includes("status code 401")) {
+        // Only basic auth has a password to get wrong; SSO/cert/oauth connections do not.
         return window.showErrorMessage(
           name
-            ? `Authentication failed for "${name}". Check your username/password in Connection Manager.`
-            : `Authentication failed. Check your credentials.`
+            ? `Authentication failed for "${name}" (HTTP 401). If this connection uses SSO, your SAP session could not be established — sign in to the system in your browser and reconnect. For basic auth, check your credentials in Connection Manager.`
+            : `Authentication failed (HTTP 401).`
         )
       }
       if (errStr.includes("status code 503")) {

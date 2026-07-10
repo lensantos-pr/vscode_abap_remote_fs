@@ -58,10 +58,10 @@ jest.mock(
   { virtual: true }
 )
 
-// ../adt/session is deliberately NOT mocked: the retry policy is real code under test here.
+// ../adt/session is deliberately NOT mocked: isAuthExpired is real code under test here.
 jest.mock("../adt/conections", () => ({
   getOrCreateRoot: jest.fn(),
-  reauthenticate: jest.fn().mockResolvedValue(false),
+  invalidateSession: jest.fn(),
   ADTSCHEME: "adt"
 }))
 
@@ -334,9 +334,10 @@ describe("FsProvider", () => {
     })
   })
 
-  // An ADT stateful session dies after ~10 minutes. The next request returns 401,
-  // which used to surface as "Wrong password?" even on passwordless SSO connections.
-  describe("expired session recovery", () => {
+  // A 401 must never be retried. Under browser_sso every request carries the "browser-sso"
+  // sentinel as a basic-auth password, so each retry with a rejected cookie is one more
+  // wrong-password logon against the real SAP user, walking it toward a lockout.
+  describe("expired session handling", () => {
     const expired = () => Object.assign(new Error("Unauthorized"), { status: 401 })
 
     const rootThatFails = (outcomes: Array<"401" | "ok">, node: any = { type: 1, size: 1 }) => {
@@ -353,34 +354,50 @@ describe("FsProvider", () => {
       ;(LocalFsProvider.useLocalStorage as jest.Mock).mockReturnValue(false)
     })
 
-    it("renews the session and replays stat after a 401", async () => {
-      const { node, getNodeAsync } = rootThatFails(["401", "ok"])
-      const { reauthenticate } = require("../adt/conections")
-      ;(reauthenticate as jest.Mock).mockResolvedValue(true)
+    it("never replays a request that was rejected with 401", async () => {
+      const { getNodeAsync } = rootThatFails(["401", "ok"])
 
-      const result = await FsProvider.get(context).stat(makeUri("/sap/bc/adt/prog"))
+      await expect(FsProvider.get(context).stat(makeUri("/sap/bc/adt/prog"))).rejects.toThrow()
 
-      expect(result).toBe(node)
-      expect(getNodeAsync).toHaveBeenCalledTimes(2)
-      expect(reauthenticate).toHaveBeenCalledWith("host")
+      // one attempt, one failed logon — not two
+      expect(getNodeAsync).toHaveBeenCalledTimes(1)
     })
 
-    it("renews the session and replays readDirectory after a 401", async () => {
-      const { getNodeAsync } = rootThatFails(["401", "ok"], [])
-      const { isFolder } = require("abapfs")
-      ;(isFolder as jest.Mock).mockReturnValue(true)
-      const { reauthenticate } = require("../adt/conections")
-      ;(reauthenticate as jest.Mock).mockResolvedValue(true)
+    it("drops the dead credentials so they cannot be sent again", async () => {
+      rootThatFails(["401"])
+      const { invalidateSession } = require("../adt/conections")
 
-      await expect(
-        FsProvider.get(context).readDirectory(makeUri("/sap/bc/adt/pkg"))
-      ).resolves.toEqual([])
-      expect(getNodeAsync).toHaveBeenCalledTimes(2)
-      expect(reauthenticate).toHaveBeenCalledTimes(1)
+      await FsProvider.get(context)
+        .stat(makeUri("/sap/bc/adt/prog"))
+        .catch(() => undefined)
+
+      expect(invalidateSession).toHaveBeenCalledWith("host")
     })
 
-    it("does not renew the session for a DNS failure", async () => {
-      const { getOrCreateRoot, reauthenticate } = require("../adt/conections")
+    it("blames the expired session, never the password", async () => {
+      rootThatFails(["401"])
+
+      const err: Error = await FsProvider.get(context)
+        .stat(makeUri("/sap/bc/adt/prog"))
+        .catch(e => e)
+
+      expect(err.message).toMatch(/session expired/i)
+      expect(err.message).not.toMatch(/wrong password/i)
+    })
+
+    it("reports a 401 from readFile instead of masking it as Unavailable", async () => {
+      rootThatFails(["401"])
+
+      const err: Error = await FsProvider.get(context)
+        .readFile(makeUri("/sap/bc/adt/prog"))
+        .catch(e => e)
+
+      expect(err.message).toMatch(/session expired/i)
+      expect(err.message).not.toMatch(/unavailable/i)
+    })
+
+    it("leaves a DNS failure alone: nothing to invalidate, nothing to blame on auth", async () => {
+      const { getOrCreateRoot, invalidateSession } = require("../adt/conections")
       ;(getOrCreateRoot as jest.Mock).mockRejectedValue(
         new Error("getaddrinfo ENOTFOUND sap.example.com")
       )
@@ -388,35 +405,7 @@ describe("FsProvider", () => {
       await expect(FsProvider.get(context).stat(makeUri("/sap/bc/adt/prog"))).rejects.toThrow(
         /ENOTFOUND/
       )
-      expect(reauthenticate).not.toHaveBeenCalled()
-    })
-
-    it("blames the expired session, never the password, when renewal fails", async () => {
-      const { getNodeAsync } = rootThatFails(["401"])
-      const { reauthenticate } = require("../adt/conections")
-      ;(reauthenticate as jest.Mock).mockResolvedValue(false)
-
-      const err: Error = await FsProvider.get(context)
-        .stat(makeUri("/sap/bc/adt/prog"))
-        .catch(e => e)
-
-      expect(err.message).toMatch(/session or credentials expired/i)
-      expect(err.message).not.toMatch(/wrong password/i)
-      // recovery declined, so the operation must not be replayed
-      expect(getNodeAsync).toHaveBeenCalledTimes(1)
-    })
-
-    it("reports a 401 from readFile instead of masking it as Unavailable", async () => {
-      rootThatFails(["401"])
-      const { reauthenticate } = require("../adt/conections")
-      ;(reauthenticate as jest.Mock).mockResolvedValue(false)
-
-      const err: Error = await FsProvider.get(context)
-        .readFile(makeUri("/sap/bc/adt/prog"))
-        .catch(e => e)
-
-      expect(err.message).toMatch(/session or credentials expired/i)
-      expect(err.message).not.toMatch(/unavailable/i)
+      expect(invalidateSession).not.toHaveBeenCalled()
     })
   })
 })

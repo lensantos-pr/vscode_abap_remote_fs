@@ -285,6 +285,22 @@ function vscodeSsoNotify(helperUrl: string) {
 }
 
 /**
+ * Authentication for a browser SSO connection lives entirely in the Cookie header.
+ *
+ * ADTClient only builds an HTTP basic `auth` for axios when its password is a string, and it
+ * only writes an Authorization header when the resolved bearer token is truthy. Handing it a
+ * fetcher that resolves to an empty string therefore suppresses both: requests go out carrying
+ * the SAP session cookie and nothing else.
+ *
+ * This matters beyond tidiness. A string password here would be a sentinel that is not the
+ * user's password, sent as basic auth on every request. SAP ignores it while the cookie is
+ * valid, but the moment the cookie lapses it evaluates the sentinel instead and records a
+ * wrong-password logon for the real user — counting toward login/fails_to_user_lock. An expired
+ * session would then walk the account toward a lockout.
+ */
+const noBasicAuth = async () => ""
+
+/**
  * Build an AuthResult using stored or freshly captured SSO cookies.
  */
 export async function buildBrowserSsoAuth(
@@ -304,7 +320,7 @@ export async function buildBrowserSsoAuth(
 
   log.debug(`[browser-sso] buildBrowserSsoAuth complete for ${connId}: ${cookies.length} cookies`)
   return {
-    passwordOrFetcher: "browser-sso",
+    passwordOrFetcher: noBasicAuth,
     ...(headers ? { headers } : {})
   }
 }
@@ -327,7 +343,7 @@ export async function refreshBrowserSsoAuth(
 
   log.debug(`[browser-sso] refreshBrowserSsoAuth complete for ${connId}: ${cookies.length} cookies`)
   return {
-    passwordOrFetcher: "browser-sso",
+    passwordOrFetcher: noBasicAuth,
     ...(headers ? { headers } : {})
   }
 }

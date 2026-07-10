@@ -1,8 +1,13 @@
-import { ADTClient } from "abap-adt-api"
-
 /**
- * Session recovery policy, deliberately free of vscode and configuration imports so it
- * can be reasoned about and tested on its own.
+ * Session-expiry detection, deliberately free of vscode and configuration imports so it can be
+ * reasoned about and tested on its own.
+ *
+ * There is intentionally no retry or auto-renewal helper here. An ADTClient freezes its auth
+ * headers at construction, so a retry re-sends the credentials the server just rejected. Under
+ * browser_sso those credentials include the "browser-sso" sentinel as a basic-auth password,
+ * which SAP records as a wrong-password logon for the real user — so retrying an expired session
+ * walks the account toward login/fails_to_user_lock. Recovery belongs to an explicit reconnect,
+ * which harvests a fresh session. See invalidateSession in ./conections.
  */
 
 const statusOf = (e: any): number | undefined => e?.status ?? e?.response?.status
@@ -16,58 +21,4 @@ export const isAuthExpired = (e: unknown): boolean => {
   const status = statusOf(e)
   if (typeof status === "number") return status === 401
   return /status code 401/i.test(String((e as any)?.message ?? e))
-}
-
-/**
- * Re-establish a stateful ADT session on an existing client, reusing its credentials.
- *
- * Stateful sessions expire server-side after roughly 10 minutes. The language server stays
- * ahead of that by rebuilding its client every 4 minutes (see server/src/clientManager.ts);
- * the filesystem client has no such timer and recovers on demand instead. Keeping the same
- * ADTClient instance matters: Root and AFsService hold a reference to it.
- */
-export async function renewSession(client: ADTClient): Promise<void> {
-  // The session being dropped is already dead, so a failure here is expected and harmless.
-  await client.dropSession().catch(() => undefined)
-  await client.login()
-  const clone = client.statelessClone
-  if (!clone.loggedin) await clone.login()
-}
-
-/**
- * Bring a connection back to life, cheapest option first.
- *
- * An ADTClient freezes its auth headers at construction, so renewing in place only helps
- * when the stateful session lapsed but the SSO cookies are still good. Once the cookies
- * themselves go stale — they carry a 30 minute TTL — login() keeps returning 401 no matter
- * how often it is retried, and the only way forward is a new client built on freshly
- * harvested cookies. That is what `rebuild` does, and why it is the fallback rather than
- * the first move: it re-harvests through Playwright, which costs several seconds.
- */
-export async function recoverSession(
-  client: ADTClient | undefined,
-  rebuild: () => Promise<boolean>
-): Promise<boolean> {
-  if (!client) return false
-  try {
-    await renewSession(client)
-    return true
-  } catch (e) {
-    if (!isAuthExpired(e)) throw e
-  }
-  return rebuild()
-}
-
-/** Run `op`, recovering from an expired session exactly once. */
-export async function retryOnExpiredSession<T>(
-  op: () => Promise<T>,
-  recover: () => Promise<boolean>
-): Promise<T> {
-  try {
-    return await op()
-  } catch (e) {
-    if (!isAuthExpired(e)) throw e
-    if (!(await recover())) throw e
-    return op()
-  }
 }
