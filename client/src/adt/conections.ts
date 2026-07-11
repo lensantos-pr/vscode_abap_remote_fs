@@ -37,10 +37,7 @@ export function invalidateSession(connId: string): void {
   void clearSsoCookies(connId).catch(() => undefined)
   if (client) void client.logout().catch(() => undefined)
 
-  failedConnections.set(
-    connId,
-    `Session expired for ${connId}. Reconnect to sign in again.`
-  )
+  failedConnections.set(connId, `Session expired for ${connId}. Reconnect to sign in again.`)
   log(`Invalidated expired session for ${connId} — stored SSO cookies dropped`)
 }
 

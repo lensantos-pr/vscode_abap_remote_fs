@@ -37,7 +37,14 @@ jest.mock("../fs/LocalFsProvider", () => ({
 jest.mock("../lib", () => ({ log: jest.fn() }))
 jest.mock("abapfs", () => ({}))
 
-import { ADTSCHEME, ADTURIPATTERN, abapUri, getClient, getRoot, rootIsConnected } from "./conections"
+import {
+  ADTSCHEME,
+  ADTURIPATTERN,
+  abapUri,
+  getClient,
+  getRoot,
+  rootIsConnected
+} from "./conections"
 import { isAuthExpired } from "./session"
 
 describe("ADTSCHEME", () => {
@@ -142,6 +149,3 @@ describe("isAuthExpired", () => {
     expect(isAuthExpired(new Error("getaddrinfo ENOTFOUND sap.example.com"))).toBe(false)
   })
 })
-
-
-
