@@ -1,4 +1,5 @@
-import { getOrCreateRoot } from "../adt/conections"
+import { getOrCreateRoot, invalidateSession, isSsoConnection } from "../adt/conections"
+import { isAuthExpired } from "../adt/session"
 import {
   FileSystemError,
   FileChangeType,
@@ -143,12 +144,13 @@ export class FsProvider implements FileSystemProvider {
       if (isAbapFile(node)) {
         const contents = await node.read()
         openInGui(uri, node.object)
-
-        const buf = Buffer.from(contents)
-        return buf
+        return Buffer.from(contents)
       }
     } catch (error) {
       log.debug(`Error reading file ${uri?.toString()}\n${caughtToString(error)}`)
+      // Reporting an authentication or transport failure as "Unavailable" hides the cause.
+      const wrapped = this.wrapHttpError(error, uri)
+      if (wrapped !== error) throw wrapped
     }
     throw FileSystemError.Unavailable(uri)
   }
@@ -183,10 +185,21 @@ export class FsProvider implements FileSystemProvider {
   private wrapHttpError(e: unknown, uri: Uri): unknown {
     if (e instanceof FileSystemError) return e
     const msg = caughtToString(e)
-    if (msg.includes("status code 401"))
-      return FileSystemError.NoPermissions(
-        `Authentication failed for ${uri.authority}. Wrong password?`
-      )
+    if (isAuthExpired(e)) {
+      // Only SSO/ticket connections (browser_sso, kerberos) carry frozen credentials a retry
+      // cannot recover, so tear those down — the stored cookies are dropped and the connection is
+      // marked failed so the next connect re-harvests a session rather than replaying a dead one.
+      // Basic/cert/oauth clients re-authenticate themselves on the next request; invalidating them
+      // on a transient background 401 would strand a recoverable session (dead until manual
+      // reconnect), so we surface the error without dropping the client.
+      if (isSsoConnection(uri.authority)) {
+        invalidateSession(uri.authority)
+        return FileSystemError.NoPermissions(
+          `Authentication failed for ${uri.authority} (HTTP 401). Your SSO session expired — reconnect to sign in again.`
+        )
+      }
+      return FileSystemError.NoPermissions(`Authentication failed for ${uri.authority} (HTTP 401).`)
+    }
     if (msg.includes("status code 403"))
       return FileSystemError.NoPermissions(
         `Access denied to ${uri.authority} (HTTP 403). Likely a proxy issue or ADT service (/sap/bc/adt) not activated in SICF — contact your Basis team.`

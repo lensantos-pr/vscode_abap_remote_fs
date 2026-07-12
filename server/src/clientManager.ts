@@ -172,7 +172,14 @@ const refreshClient = async (key: string, conf: ClientConfiguration) => {
       } else if (authMethod === "kerberos" || authMethod === "browser_sso") {
         warn(`${authMethod} auth headers missing for ${key} — user may need to reconnect`)
       }
-      pwdOrFetch = `${authMethod}-auth`
+      // browser_sso/kerberos authenticate via the harvested Cookie header set above, never a
+      // password. A string here would make ADTClient send it as HTTP basic auth on every request;
+      // once the cookie lapses SAP evaluates that sentinel and records a wrong-password logon for
+      // the real user, counting toward login/fails_to_user_lock — an expired session would walk the
+      // account toward a lockout, re-armed every 4 minutes by the refresh interval below. An
+      // empty-token fetcher suppresses the Authorization header entirely (mirrors the client fix in
+      // config.ts): requests carry the Cookie and nothing else, and a rejected cookie costs no logon.
+      pwdOrFetch = async () => ""
     }
   } else {
     pwdOrFetch = createFetchToken(conf) || conf.password
@@ -205,6 +212,7 @@ export async function clientFromKey(key: string) {
       await refreshClient(key, conf)
       // as clients are stateful, they will expire, usually in 10 minutes. So we need to refresh them every 4 minutes
       setInterval(() => refreshClient(key, conf), 240000)
+      client = clients.get(key)
     }
   }
   return client

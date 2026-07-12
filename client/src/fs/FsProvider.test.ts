@@ -14,12 +14,16 @@ jest.mock(
       }
       dispose: () => void
     }
-    const FileSystemError = {
-      FileNotFound: jest.fn(msg =>
-        Object.assign(new Error(msg), { name: "FileNotFound (FileSystemError)" })
-      ),
-      NoPermissions: jest.fn(msg => new Error(msg)),
-      Unavailable: jest.fn(msg => new Error(msg))
+    // A real class, so `e instanceof FileSystemError` in FsProvider.wrapHttpError works.
+    class FileSystemError extends Error {
+      static FileNotFound = jest.fn(
+        msg =>
+          Object.assign(new FileSystemError(String(msg)), {
+            name: "FileNotFound (FileSystemError)"
+          }) as Error
+      )
+      static NoPermissions = jest.fn(msg => new FileSystemError(String(msg)) as Error)
+      static Unavailable = jest.fn(msg => new FileSystemError(String(msg)) as Error)
     }
     const TextDocumentSaveReason = { Manual: 1, AfterDelay: 2, FocusOut: 3 }
     const workspace = {
@@ -54,8 +58,13 @@ jest.mock(
   { virtual: true }
 )
 
+// ../adt/session is deliberately NOT mocked: isAuthExpired is real code under test here.
 jest.mock("../adt/conections", () => ({
   getOrCreateRoot: jest.fn(),
+  invalidateSession: jest.fn(),
+  // Default to SSO so the existing expired-session tests exercise the tear-down path; the
+  // basic-auth self-heal test overrides this to false.
+  isSsoConnection: jest.fn().mockReturnValue(true),
   ADTSCHEME: "adt"
 }))
 
@@ -325,6 +334,99 @@ describe("FsProvider", () => {
       const uri = makeUri("/sap/bc/adt/missing")
 
       await expect(instance.stat(uri)).rejects.toBeDefined()
+    })
+  })
+
+  // A 401 must never be retried. Under browser_sso every request carries the "browser-sso"
+  // sentinel as a basic-auth password, so each retry with a rejected cookie is one more
+  // wrong-password logon against the real SAP user, walking it toward a lockout.
+  describe("expired session handling", () => {
+    const expired = () => Object.assign(new Error("Unauthorized"), { status: 401 })
+
+    const rootThatFails = (outcomes: Array<"401" | "ok">, node: any = { type: 1, size: 1 }) => {
+      const getNodeAsync = jest.fn()
+      for (const o of outcomes)
+        if (o === "401") getNodeAsync.mockRejectedValueOnce(expired())
+        else getNodeAsync.mockResolvedValueOnce(node)
+      const { getOrCreateRoot } = require("../adt/conections")
+      ;(getOrCreateRoot as jest.Mock).mockResolvedValue({ getNodeAsync })
+      return { node, getNodeAsync }
+    }
+
+    beforeEach(() => {
+      ;(LocalFsProvider.useLocalStorage as jest.Mock).mockReturnValue(false)
+      const { isSsoConnection } = require("../adt/conections")
+      ;(isSsoConnection as jest.Mock).mockReturnValue(true)
+    })
+
+    it("never replays a request that was rejected with 401", async () => {
+      const { getNodeAsync } = rootThatFails(["401", "ok"])
+
+      await expect(FsProvider.get(context).stat(makeUri("/sap/bc/adt/prog"))).rejects.toThrow()
+
+      // one attempt, one failed logon — not two
+      expect(getNodeAsync).toHaveBeenCalledTimes(1)
+    })
+
+    it("drops the dead credentials so they cannot be sent again", async () => {
+      rootThatFails(["401"])
+      const { invalidateSession } = require("../adt/conections")
+
+      await FsProvider.get(context)
+        .stat(makeUri("/sap/bc/adt/prog"))
+        .catch(() => undefined)
+
+      expect(invalidateSession).toHaveBeenCalledWith("host")
+    })
+
+    it("blames the expired session, never the password", async () => {
+      rootThatFails(["401"])
+
+      const err: Error = await FsProvider.get(context)
+        .stat(makeUri("/sap/bc/adt/prog"))
+        .catch(e => e)
+
+      expect(err.message).toMatch(/session expired/i)
+      expect(err.message).not.toMatch(/wrong password/i)
+    })
+
+    it("reports a 401 from readFile instead of masking it as Unavailable", async () => {
+      rootThatFails(["401"])
+
+      const err: Error = await FsProvider.get(context)
+        .readFile(makeUri("/sap/bc/adt/prog"))
+        .catch(e => e)
+
+      expect(err.message).toMatch(/session expired/i)
+      expect(err.message).not.toMatch(/unavailable/i)
+    })
+
+    it("leaves a DNS failure alone: nothing to invalidate, nothing to blame on auth", async () => {
+      const { getOrCreateRoot, invalidateSession } = require("../adt/conections")
+      ;(getOrCreateRoot as jest.Mock).mockRejectedValue(
+        new Error("getaddrinfo ENOTFOUND sap.example.com")
+      )
+
+      await expect(FsProvider.get(context).stat(makeUri("/sap/bc/adt/prog"))).rejects.toThrow(
+        /ENOTFOUND/
+      )
+      expect(invalidateSession).not.toHaveBeenCalled()
+    })
+
+    it("does NOT tear down a basic-auth session on 401: it can re-authenticate itself", async () => {
+      const { invalidateSession, isSsoConnection } = require("../adt/conections")
+      ;(isSsoConnection as jest.Mock).mockReturnValue(false)
+      rootThatFails(["401"])
+
+      const err: Error = await FsProvider.get(context)
+        .stat(makeUri("/sap/bc/adt/prog"))
+        .catch(e => e)
+
+      // A non-SSO client keeps its credentials and self-heals on the next request; invalidating it
+      // would strand a recoverable session. The 401 is still surfaced, just without a tear-down.
+      expect(invalidateSession).not.toHaveBeenCalled()
+      expect(err.message).toMatch(/401/)
+      expect(err.message).not.toMatch(/reconnect/i)
     })
   })
 })

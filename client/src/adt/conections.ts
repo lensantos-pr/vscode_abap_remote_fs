@@ -1,4 +1,5 @@
 import { RemoteManager, createClient, createAuthenticatedClient } from "../config"
+import { getAuthMethod } from "vscode-abap-remote-fs-sharedapi"
 import { AFsService, Root } from "abapfs"
 import { Uri, FileSystemError, workspace } from "vscode"
 import { ADTClient } from "abap-adt-api"
@@ -6,6 +7,8 @@ import { LogOutPendingDebuggers } from "./debugger"
 import { SapSystemValidator } from "../services/sapSystemValidator"
 import { LocalFsProvider } from "../fs/LocalFsProvider"
 import { log } from "../lib"
+import { clearSsoCookies } from "../auth"
+export { isAuthExpired } from "./session"
 export const ADTSCHEME = "adt"
 export const ADTURIPATTERN = /\/sap\/bc\/adt\//
 
@@ -15,6 +18,42 @@ const creations = new Map<string, Promise<void>>()
 
 const missing = (connId: string) => {
   return FileSystemError.FileNotFound(`No ABAP server defined for ${connId}`)
+}
+
+/**
+ * Throw away everything cached for a connection whose credentials the server rejected.
+ *
+ * Retrying is not an option here. Under browser_sso the ADTClient carries the "browser-sso"
+ * sentinel as its basic-auth password, so any request made with a rejected cookie is recorded
+ * by SAP as a wrong-password logon for the real user and counts toward login/fails_to_user_lock.
+ * The stored cookies are dropped so the next connect harvests a fresh session rather than
+ * replaying the dead one, and the connection is marked failed so background filesystem calls
+ * stop hitting the server until the user reconnects.
+ */
+export function invalidateSession(connId: string): void {
+  const client = clients.get(connId)
+  clients.delete(connId)
+  roots.delete(connId)
+
+  void clearSsoCookies(connId).catch(() => undefined)
+  if (client) void client.logout().catch(() => undefined)
+
+  failedConnections.set(connId, `Session expired for ${connId}. Reconnect to sign in again.`)
+  log(`Invalidated expired session for ${connId} — stored SSO cookies dropped`)
+}
+
+/**
+ * Auth methods whose credentials are frozen at ADTClient construction (a harvested cookie or
+ * ticket), so a rejected 401 cannot be recovered by retrying — only by an explicit reconnect that
+ * re-harvests them. Basic, cert and oauth clients carry a password/fetcher and re-authenticate
+ * themselves on the next request, so tearing them down on a transient 401 would strand a
+ * recoverable session. Only these methods should trigger invalidateSession from a background 401.
+ */
+const FROZEN_CREDENTIAL_METHODS = ["browser_sso", "kerberos"]
+
+export function isSsoConnection(connId: string): boolean {
+  const conf = RemoteManager.get().byId(connId)
+  return !!conf && FROZEN_CREDENTIAL_METHODS.includes(getAuthMethod(conf))
 }
 
 export const abapUri = (u?: Uri) => u?.scheme === ADTSCHEME && !LocalFsProvider.useLocalStorage(u)
@@ -171,6 +210,11 @@ export async function disconnect() {
   await Promise.all([...main, ...clones, ...LogOutPendingDebuggers()])
   // Clear all failure states so reconnect is possible
   failedConnections.clear()
+  // Drop the cached clients and roots too. Without this, reconnecting silently reuses the
+  // client we just logged out: getOrCreateRoot short-circuits on the surviving root, and
+  // every later request fails with 401 until the window is reloaded.
+  clients.clear()
+  roots.clear()
   return
 }
 

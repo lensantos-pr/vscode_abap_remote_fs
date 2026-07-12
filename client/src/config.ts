@@ -267,11 +267,23 @@ export async function createAuthenticatedClient(conf: RemoteConfig): Promise<ADT
     case "browser_sso": {
       log.debug(`[auth] Building browser SSO auth for ${conf.name}`)
       const result = await buildBrowserSsoAuth(conf.name, conf.url, conf.client, conf.browserSso)
-      if (result.headers) sslconf.headers = { ...sslconf.headers, ...result.headers }
+      // A browser_sso connection has no password: ADTClient receives the "browser-sso" sentinel and
+      // sends it as HTTP basic auth. Without cookies SAP evaluates that sentinel, records a
+      // wrong-password logon for the real user, and counts it toward login/fails_to_user_lock.
+      // Refusing here costs nothing; building the client costs a failed logon on every request.
+      if (!result.headers)
+        throw new Error(
+          `Browser SSO produced no cookies for ${conf.name}. The SAP session could not be harvested — sign in to ${conf.url} in your browser, then reconnect.`
+        )
+      sslconf.headers = { ...sslconf.headers, ...result.headers }
+      // Authentication is the cookie. Passing a string password here would make ADTClient send it
+      // as HTTP basic auth on every request, and SAP would count each rejected-cookie request as
+      // a wrong-password logon for the real user. An empty-token fetcher suppresses the
+      // Authorization header entirely, so requests carry the Cookie and nothing else.
       const client = new ADTClient(
         conf.url,
         conf.username,
-        result.passwordOrFetcher,
+        async () => "",
         conf.client,
         conf.language,
         sslconf
