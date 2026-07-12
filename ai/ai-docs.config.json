@@ -1,0 +1,9 @@
+{
+  "$comment": "Single-sources the shared 'Hard Rules' ruleset (ai/partials/*.md) into the AI instruction files so the three copies can't silently drift. Regenerate: node tools/gen-ai-docs.mjs. Check for drift: node tools/gen-ai-docs.mjs --check. CONTRIBUTING.md remains the human source of truth for the rules themselves; keep the partial in step with it.",
+  "partialsDir": "ai/partials",
+  "targets": {
+    "CLAUDE.md": { "partials": ["hard-rules"] },
+    "AGENTS.md": { "partials": ["hard-rules"] },
+    ".github/copilot-instructions.md": { "partials": ["hard-rules"] }
+  }
+}
