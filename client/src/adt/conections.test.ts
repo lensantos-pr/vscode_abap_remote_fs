@@ -36,6 +36,7 @@ jest.mock("../fs/LocalFsProvider", () => ({
 }))
 jest.mock("../lib", () => ({ log: jest.fn() }))
 jest.mock("abapfs", () => ({}))
+jest.mock("../auth", () => ({ clearSsoCookies: jest.fn().mockResolvedValue(undefined) }))
 
 import {
   ADTSCHEME,
@@ -43,7 +44,10 @@ import {
   abapUri,
   getClient,
   getRoot,
-  rootIsConnected
+  rootIsConnected,
+  isSsoConnection,
+  invalidateSession,
+  getOrCreateRoot
 } from "./conections"
 import { isAuthExpired } from "./session"
 
@@ -147,5 +151,55 @@ describe("isAuthExpired", () => {
 
   it("ignores DNS failures", () => {
     expect(isAuthExpired(new Error("getaddrinfo ENOTFOUND sap.example.com"))).toBe(false)
+  })
+})
+
+describe("isSsoConnection", () => {
+  const { RemoteManager } = require("../config")
+  const withAuthMethod = (authMethod?: string) =>
+    (RemoteManager.get as jest.Mock).mockReturnValue({
+      byId: () => (authMethod ? { authMethod } : undefined)
+    })
+
+  it("is true for browser_sso — its cookie is frozen at construction, a retry cannot recover", () => {
+    withAuthMethod("browser_sso")
+    expect(isSsoConnection("c")).toBe(true)
+  })
+
+  it("is true for kerberos — its ticket header is likewise frozen", () => {
+    withAuthMethod("kerberos")
+    expect(isSsoConnection("c")).toBe(true)
+  })
+
+  it("is false for basic auth — it keeps a password and re-authenticates itself", () => {
+    withAuthMethod("basic")
+    expect(isSsoConnection("c")).toBe(false)
+  })
+
+  it("is false for oauth_onprem — it holds a token fetcher, not a frozen credential", () => {
+    withAuthMethod("oauth_onprem")
+    expect(isSsoConnection("c")).toBe(false)
+  })
+
+  it("is false when the connection is unknown", () => {
+    withAuthMethod(undefined)
+    expect(isSsoConnection("c")).toBe(false)
+  })
+})
+
+describe("invalidateSession", () => {
+  it("marks the connection failed so a background reconnect cannot replay a dead session", async () => {
+    const { clearSsoCookies } = require("../auth")
+    invalidateSession("sso_expired_conn")
+
+    // The stored SSO cookies are dropped so the next connect harvests a fresh session…
+    expect(clearSsoCookies).toHaveBeenCalledWith("sso_expired_conn")
+    // …and the connection is marked failed, so filesystem calls short-circuit (no retry storm,
+    // no replayed dead session) until the user explicitly reconnects.
+    await expect(getOrCreateRoot("sso_expired_conn")).rejects.toThrow(/expired|reconnect/i)
+  })
+
+  it("is safe to call when nothing is cached for the connection", () => {
+    expect(() => invalidateSession("never_connected")).not.toThrow()
   })
 })

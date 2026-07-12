@@ -1,4 +1,4 @@
-import { getOrCreateRoot, invalidateSession } from "../adt/conections"
+import { getOrCreateRoot, invalidateSession, isSsoConnection } from "../adt/conections"
 import { isAuthExpired } from "../adt/session"
 import {
   FileSystemError,
@@ -185,15 +185,20 @@ export class FsProvider implements FileSystemProvider {
   private wrapHttpError(e: unknown, uri: Uri): unknown {
     if (e instanceof FileSystemError) return e
     const msg = caughtToString(e)
-    // Never blame the password: cert, kerberos, browser_sso and oauth connections have none.
-    // Drop the dead credentials rather than retrying with them — under browser_sso every request
-    // carrying a rejected cookie also carries a sentinel basic-auth password, which SAP records
-    // as a failed logon for the real user. Recovery is left to an explicit reconnect.
     if (isAuthExpired(e)) {
-      invalidateSession(uri.authority)
-      return FileSystemError.NoPermissions(
-        `Authentication failed for ${uri.authority} (HTTP 401). Your session expired — reconnect to sign in again.`
-      )
+      // Only SSO/ticket connections (browser_sso, kerberos) carry frozen credentials a retry
+      // cannot recover, so tear those down — the stored cookies are dropped and the connection is
+      // marked failed so the next connect re-harvests a session rather than replaying a dead one.
+      // Basic/cert/oauth clients re-authenticate themselves on the next request; invalidating them
+      // on a transient background 401 would strand a recoverable session (dead until manual
+      // reconnect), so we surface the error without dropping the client.
+      if (isSsoConnection(uri.authority)) {
+        invalidateSession(uri.authority)
+        return FileSystemError.NoPermissions(
+          `Authentication failed for ${uri.authority} (HTTP 401). Your SSO session expired — reconnect to sign in again.`
+        )
+      }
+      return FileSystemError.NoPermissions(`Authentication failed for ${uri.authority} (HTTP 401).`)
     }
     if (msg.includes("status code 403"))
       return FileSystemError.NoPermissions(

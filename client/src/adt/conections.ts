@@ -1,4 +1,5 @@
 import { RemoteManager, createClient, createAuthenticatedClient } from "../config"
+import { getAuthMethod } from "vscode-abap-remote-fs-sharedapi"
 import { AFsService, Root } from "abapfs"
 import { Uri, FileSystemError, workspace } from "vscode"
 import { ADTClient } from "abap-adt-api"
@@ -39,6 +40,20 @@ export function invalidateSession(connId: string): void {
 
   failedConnections.set(connId, `Session expired for ${connId}. Reconnect to sign in again.`)
   log(`Invalidated expired session for ${connId} — stored SSO cookies dropped`)
+}
+
+/**
+ * Auth methods whose credentials are frozen at ADTClient construction (a harvested cookie or
+ * ticket), so a rejected 401 cannot be recovered by retrying — only by an explicit reconnect that
+ * re-harvests them. Basic, cert and oauth clients carry a password/fetcher and re-authenticate
+ * themselves on the next request, so tearing them down on a transient 401 would strand a
+ * recoverable session. Only these methods should trigger invalidateSession from a background 401.
+ */
+const FROZEN_CREDENTIAL_METHODS = ["browser_sso", "kerberos"]
+
+export function isSsoConnection(connId: string): boolean {
+  const conf = RemoteManager.get().byId(connId)
+  return !!conf && FROZEN_CREDENTIAL_METHODS.includes(getAuthMethod(conf))
 }
 
 export const abapUri = (u?: Uri) => u?.scheme === ADTSCHEME && !LocalFsProvider.useLocalStorage(u)

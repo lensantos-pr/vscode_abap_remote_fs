@@ -62,6 +62,9 @@ jest.mock(
 jest.mock("../adt/conections", () => ({
   getOrCreateRoot: jest.fn(),
   invalidateSession: jest.fn(),
+  // Default to SSO so the existing expired-session tests exercise the tear-down path; the
+  // basic-auth self-heal test overrides this to false.
+  isSsoConnection: jest.fn().mockReturnValue(true),
   ADTSCHEME: "adt"
 }))
 
@@ -352,6 +355,8 @@ describe("FsProvider", () => {
 
     beforeEach(() => {
       ;(LocalFsProvider.useLocalStorage as jest.Mock).mockReturnValue(false)
+      const { isSsoConnection } = require("../adt/conections")
+      ;(isSsoConnection as jest.Mock).mockReturnValue(true)
     })
 
     it("never replays a request that was rejected with 401", async () => {
@@ -406,6 +411,22 @@ describe("FsProvider", () => {
         /ENOTFOUND/
       )
       expect(invalidateSession).not.toHaveBeenCalled()
+    })
+
+    it("does NOT tear down a basic-auth session on 401: it can re-authenticate itself", async () => {
+      const { invalidateSession, isSsoConnection } = require("../adt/conections")
+      ;(isSsoConnection as jest.Mock).mockReturnValue(false)
+      rootThatFails(["401"])
+
+      const err: Error = await FsProvider.get(context)
+        .stat(makeUri("/sap/bc/adt/prog"))
+        .catch(e => e)
+
+      // A non-SSO client keeps its credentials and self-heals on the next request; invalidating it
+      // would strand a recoverable session. The 401 is still surfaced, just without a tear-down.
+      expect(invalidateSession).not.toHaveBeenCalled()
+      expect(err.message).toMatch(/401/)
+      expect(err.message).not.toMatch(/reconnect/i)
     })
   })
 })
