@@ -34,7 +34,7 @@ jest.mock("../services/sapSystemValidator", () => ({
 jest.mock("../fs/LocalFsProvider", () => ({
   LocalFsProvider: { useLocalStorage: jest.fn().mockReturnValue(false) }
 }))
-jest.mock("../lib", () => ({ log: jest.fn() }))
+jest.mock("../lib", () => ({ log: Object.assign(jest.fn(), { debug: jest.fn() }) }))
 jest.mock("abapfs", () => ({}))
 jest.mock("../auth", () => ({ clearSsoCookies: jest.fn().mockResolvedValue(undefined) }))
 
@@ -47,9 +47,10 @@ import {
   rootIsConnected,
   isSsoConnection,
   invalidateSession,
-  getOrCreateRoot
+  getOrCreateRoot,
+  renewSsoSession
 } from "./conections"
-import { isAuthExpired } from "./session"
+import { isAuthExpired, isSessionLikelyExpired } from "./session"
 
 describe("ADTSCHEME", () => {
   it("is 'adt'", () => {
@@ -154,6 +155,39 @@ describe("isAuthExpired", () => {
   })
 })
 
+describe("isSessionLikelyExpired", () => {
+  it("detects the ADT XML-parser crash when an IdP page is fed to it instead of asx:abap", () => {
+    // The exact TypeError thrown by abap-adt-api's parsePackageResponse when the nodestructure
+    // response is an SSO login page (no asx:abap envelope) — the reported System Library symptom.
+    expect(
+      isSessionLikelyExpired(
+        new Error("Cannot read properties of undefined (reading 'asx:values')")
+      )
+    ).toBe(true)
+  })
+
+  it("detects a 200 response whose body is an IdP/SAML HTML login page", () => {
+    expect(
+      isSessionLikelyExpired({
+        response: { status: 200, body: "<!DOCTYPE html><html><head><title>Sign in</title>" }
+      })
+    ).toBe(true)
+  })
+
+  it("detects a redirect to the SAML endpoint", () => {
+    expect(isSessionLikelyExpired(new Error("redirected to /sap/saml2/sp/acs"))).toBe(true)
+  })
+
+  it("does not fire on a plain 401 — that is isAuthExpired's job, not this one", () => {
+    expect(isSessionLikelyExpired({ status: 401 })).toBe(false)
+  })
+
+  it("does not fire on ordinary ADT errors (no false positive teardown)", () => {
+    expect(isSessionLikelyExpired(new Error("Request failed with status code 404"))).toBe(false)
+    expect(isSessionLikelyExpired(new Error("getaddrinfo ENOTFOUND sap.example.com"))).toBe(false)
+  })
+})
+
 describe("isSsoConnection", () => {
   const { RemoteManager } = require("../config")
   const withAuthMethod = (authMethod?: string) =>
@@ -201,5 +235,67 @@ describe("invalidateSession", () => {
 
   it("is safe to call when nothing is cached for the connection", () => {
     expect(() => invalidateSession("never_connected")).not.toThrow()
+  })
+})
+
+describe("renewSsoSession", () => {
+  const { RemoteManager } = require("../config")
+  const asAuthMethod = (authMethod: string) =>
+    (RemoteManager.get as jest.Mock).mockReturnValue({ byId: () => ({ authMethod }) })
+
+  it("does nothing (and never harvests) for a non-SSO connection", async () => {
+    asAuthMethod("basic")
+    const harvest = jest.fn()
+    const rebuild = jest.fn()
+    expect(await renewSsoSession("renew_basic", { harvest, rebuild })).toBe(false)
+    expect(harvest).not.toHaveBeenCalled()
+    expect(rebuild).not.toHaveBeenCalled()
+  })
+
+  it("harvests a fresh session then rebuilds the client on success", async () => {
+    asAuthMethod("browser_sso")
+    const harvest = jest.fn().mockResolvedValue(undefined)
+    const rebuild = jest.fn().mockResolvedValue(undefined)
+    expect(await renewSsoSession("renew_ok", { harvest, rebuild })).toBe(true)
+    expect(harvest).toHaveBeenCalledWith("renew_ok")
+    expect(rebuild).toHaveBeenCalledWith("renew_ok")
+  })
+
+  it("degrades to invalidateSession and never rebuilds when the IdP needs interaction", async () => {
+    asAuthMethod("browser_sso")
+    const { clearSsoCookies } = require("../auth")
+    ;(clearSsoCookies as jest.Mock).mockClear()
+    const harvest = jest.fn().mockRejectedValue(new Error("Silent SSO renewal needs interaction"))
+    const rebuild = jest.fn()
+    expect(await renewSsoSession("renew_needs_ui", { harvest, rebuild })).toBe(false)
+    // Safety-critical: a failed harvest must NEVER lead to a client rebuild…
+    expect(rebuild).not.toHaveBeenCalled()
+    // …and it degrades to the safe reconnect path (invalidateSession drops the stored cookies).
+    expect(clearSsoCookies).toHaveBeenCalledWith("renew_needs_ui")
+  })
+
+  it("degrades when the rebuild itself fails", async () => {
+    asAuthMethod("browser_sso")
+    const harvest = jest.fn().mockResolvedValue(undefined)
+    const rebuild = jest.fn().mockRejectedValue(new Error("login failed"))
+    expect(await renewSsoSession("renew_rebuild_fail", { harvest, rebuild })).toBe(false)
+  })
+
+  it("coalesces concurrent renewals into a single harvest", async () => {
+    asAuthMethod("browser_sso")
+    let harvests = 0
+    const harvest = jest.fn().mockImplementation(
+      () => new Promise<void>(res => {
+        harvests++
+        setTimeout(res, 10)
+      })
+    )
+    const rebuild = jest.fn().mockResolvedValue(undefined)
+    const results = await Promise.all([
+      renewSsoSession("renew_coalesce", { harvest, rebuild }),
+      renewSsoSession("renew_coalesce", { harvest, rebuild })
+    ])
+    expect(results).toEqual([true, true])
+    expect(harvests).toBe(1)
   })
 })

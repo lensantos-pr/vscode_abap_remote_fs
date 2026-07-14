@@ -8,7 +8,7 @@ import { SapSystemValidator } from "../services/sapSystemValidator"
 import { LocalFsProvider } from "../fs/LocalFsProvider"
 import { log } from "../lib"
 import { clearSsoCookies } from "../auth"
-export { isAuthExpired } from "./session"
+export { isAuthExpired, isSessionLikelyExpired } from "./session"
 export const ADTSCHEME = "adt"
 export const ADTURIPATTERN = /\/sap\/bc\/adt\//
 
@@ -40,6 +40,72 @@ export function invalidateSession(connId: string): void {
 
   failedConnections.set(connId, `Session expired for ${connId}. Reconnect to sign in again.`)
   log(`Invalidated expired session for ${connId} — stored SSO cookies dropped`)
+}
+
+// Concurrent expiry triggers (VS Code stats many nodes) must collapse to ONE silent renewal —
+// otherwise each would spawn its own headless browser. Keyed by connId.
+const renewals = new Map<string, Promise<boolean>>()
+
+async function defaultSilentHarvest(connId: string): Promise<void> {
+  const conn = await RemoteManager.get().byIdAsync(connId)
+  if (!conn) throw new Error(`Connection not found ${connId}`)
+  // Lazy require keeps browserSso (playwright-core / open / vault) out of the module load graph.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { harvestSsoCookiesSilently } = require("../auth")
+  await harvestSsoCookiesSilently(
+    connId,
+    conn.url,
+    String((conn as any).client ?? ""),
+    (conn as any).browserSso
+  )
+}
+
+/**
+ * Attempt a SILENT re-authentication of an expired SSO session and rebuild the client, so a lapsed
+ * browser_sso session recovers WITHOUT the user reconnecting — but only when the corporate IdP still
+ * holds a live non-interactive session (the DR1/QR1 "seamless" case). When renewal would need
+ * interaction (a client-cert prompt, a login page, or an IdP session that has itself expired — the
+ * PR1 case) it degrades to invalidateSession + the reconnect prompt.
+ *
+ * Safety invariant (the account-lockout guard): renewal NEVER replays the dead cookie and NEVER
+ * sends the "browser-sso" sentinel password. It clears the cookies, harvests a fresh session
+ * headlessly, and rebuilds through createAuthenticatedClient (empty-string fetcher). A failed harvest
+ * must never fall through to a rebuild. Concurrent triggers coalesce to a single attempt.
+ *
+ * `harvest`/`rebuild` are injectable for testing; production uses the headless harvest and create().
+ */
+export function renewSsoSession(
+  connId: string,
+  opts: { harvest?: (c: string) => Promise<void>; rebuild?: (c: string) => Promise<void> } = {}
+): Promise<boolean> {
+  let inflight = renewals.get(connId)
+  if (!inflight) {
+    inflight = doRenewSsoSession(connId, opts).finally(() => renewals.delete(connId))
+    renewals.set(connId, inflight)
+  }
+  return inflight
+}
+
+async function doRenewSsoSession(
+  connId: string,
+  opts: { harvest?: (c: string) => Promise<void>; rebuild?: (c: string) => Promise<void> }
+): Promise<boolean> {
+  if (!isSsoConnection(connId)) return false
+  const harvest = opts.harvest ?? defaultSilentHarvest
+  const rebuild = opts.rebuild ?? create
+  try {
+    // Drop the stale cached client/root so the rebuild is forced to adopt the fresh session.
+    clients.delete(connId)
+    roots.delete(connId)
+    await harvest(connId) // headless re-harvest; throws if the IdP needs the user
+    await rebuild(connId) // createAuthenticatedClient path — empty fetcher, fresh cookie
+    log(`Silently renewed SSO session for ${connId}`)
+    return true
+  } catch (e) {
+    log.debug(`[renew] Silent SSO renewal failed for ${connId}: ${String((e as any)?.message ?? e)}`)
+    invalidateSession(connId) // degrade to the safe reconnect path
+    return false
+  }
 }
 
 /**

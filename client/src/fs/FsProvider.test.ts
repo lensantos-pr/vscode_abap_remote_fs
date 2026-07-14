@@ -62,6 +62,7 @@ jest.mock(
 jest.mock("../adt/conections", () => ({
   getOrCreateRoot: jest.fn(),
   invalidateSession: jest.fn(),
+  renewSsoSession: jest.fn().mockResolvedValue(false),
   // Default to SSO so the existing expired-session tests exercise the tear-down path; the
   // basic-auth self-heal test overrides this to false.
   isSsoConnection: jest.fn().mockReturnValue(true),
@@ -427,6 +428,25 @@ describe("FsProvider", () => {
       expect(invalidateSession).not.toHaveBeenCalled()
       expect(err.message).toMatch(/401/)
       expect(err.message).not.toMatch(/reconnect/i)
+    })
+
+    it("attempts a silent renewal on a non-401 SSO expiry (IdP HTML) rather than tearing down", async () => {
+      const { getOrCreateRoot, renewSsoSession, invalidateSession } = require("../adt/conections")
+      // A lapsed SSO session returns an IdP HTML page, so the ADT XML parser throws this — not a 401.
+      const asxCrash = new Error("Cannot read properties of undefined (reading 'asx:values')")
+      ;(getOrCreateRoot as jest.Mock).mockResolvedValue({
+        getNodeAsync: jest.fn().mockRejectedValue(asxCrash)
+      })
+
+      const err: Error = await FsProvider.get(context)
+        .stat(makeUri("/sap/bc/adt/prog"))
+        .catch(e => e)
+
+      // Recover the session silently; teardown is deferred to renewSsoSession's own failure path,
+      // so FsProvider itself must NOT call invalidateSession here.
+      expect(renewSsoSession).toHaveBeenCalledWith("host")
+      expect(invalidateSession).not.toHaveBeenCalled()
+      expect(err.message).toMatch(/renew/i)
     })
   })
 })

@@ -26,7 +26,11 @@ import { PasswordVault, log } from "../lib"
 import { formatKey } from "../config"
 import * as vscode from "vscode"
 import { buildCookieHeaders, errorMessage, sanitizeCookie, toStringArray } from "./utils"
-import { capturePlaywrightCookies, PlaywrightUnavailableError } from "./playwrightSso"
+import {
+  capturePlaywrightCookies,
+  PlaywrightUnavailableError,
+  InteractionRequiredError
+} from "./playwrightSso"
 import type { BrowserSsoConfig } from "vscode-abap-remote-fs-sharedapi"
 
 const VAULT_SERVICE = "vscode.abapfs.browsersso"
@@ -346,6 +350,35 @@ export async function refreshBrowserSsoAuth(
     passwordOrFetcher: noBasicAuth,
     ...(headers ? { headers } : {})
   }
+}
+
+/**
+ * Silent (headless) SSO cookie harvest for BACKGROUND session renewal.
+ *
+ * Unlike acquireCookies, this NEVER falls back to the interactive localhost paste helper: it forces
+ * a headless Playwright run and lets any failure propagate. That is deliberate — a background renewal
+ * must not silently pop a browser or a paste page. When the corporate IdP still holds a live
+ * non-interactive session (the DR1/QR1 "seamless" case) the headless run sails through the SAML chain
+ * and harvests fresh cookies; when it needs the user (a login form or client-certificate prompt, or
+ * the IdP session has itself lapsed — the PR1 case) capturePlaywrightCookies throws
+ * InteractionRequiredError so the caller can degrade to an explicit reconnect. On success the fresh
+ * cookies are stored and returned.
+ */
+export async function harvestSsoCookiesSilently(
+  connId: string,
+  sapUrl: string,
+  sapClient: string,
+  config?: BrowserSsoConfig
+): Promise<string[]> {
+  await clearSsoCookies(connId)
+  captureLocks.delete(connId)
+  log.debug(`[browser-sso] Attempting SILENT headless SSO renewal for ${connId}`)
+  const cookies = await capturePlaywrightCookies(sapUrl, sapClient, { ...config, headless: true })
+  if (cookies.length === 0)
+    throw new InteractionRequiredError(`Silent SSO renewal yielded no cookies for ${connId}`)
+  await storeSsoCookies(connId, cookies)
+  log.debug(`[browser-sso] Silent SSO renewal succeeded for ${connId}: ${cookies.length} cookies`)
+  return cookies
 }
 
 /** Generate the helper HTML page for cookie capture. */

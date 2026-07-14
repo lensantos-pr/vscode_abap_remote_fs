@@ -28,6 +28,18 @@ export class PlaywrightUnavailableError extends Error {
   }
 }
 
+/**
+ * Thrown when a headless/silent harvest cannot complete without the user — the IdP presented a
+ * login form or a client-certificate prompt, or its own session has expired. The caller should
+ * degrade to an interactive reconnect rather than retry silently.
+ */
+export class InteractionRequiredError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "InteractionRequiredError"
+  }
+}
+
 const DEFAULT_TIMEOUT_MS = 120_000
 const DEFAULT_PROFILE_DIR = path.join(os.homedir(), ".abapfs-sso-profile")
 const DEFAULT_CHANNEL = "msedge"
@@ -127,6 +139,11 @@ export async function capturePlaywrightCookies(
     const sapCookies = allCookies.filter(c => isSapSessionCookie(c.name) || wanted.has(c.name))
 
     if (!sapCookies.some(c => isSapSessionCookie(c.name) || c.name === "MYSAPSSO2")) {
+      if (headless)
+        throw new InteractionRequiredError(
+          "Silent SSO renewal could not complete headlessly — the IdP needs interaction " +
+            "(login or client-certificate selection), or its session has expired."
+        )
       throw new Error(
         "SSO completed but no SAP session cookie (SAP_SESSIONID*/MYSAPSSO2) was found. " +
           "Check the system's ICF/SAML2 configuration."

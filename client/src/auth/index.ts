@@ -15,7 +15,11 @@ export type {
   KerberosAuthConfig,
   OAuthOnPremConfig
 } from "./types"
-export { capturePlaywrightCookies, PlaywrightUnavailableError } from "./playwrightSso"
+export {
+  capturePlaywrightCookies,
+  PlaywrightUnavailableError,
+  InteractionRequiredError
+} from "./playwrightSso"
 export {
   buildCertAuth,
   storeCertPassphrase,
@@ -23,5 +27,10 @@ export {
   clearCertPassphrase
 } from "./certificate"
 export { buildKerberosAuth, refreshKerberosAuth, clearKerberosCookies } from "./kerberos"
-export { buildBrowserSsoAuth, refreshBrowserSsoAuth, clearSsoCookies } from "./browserSso"
+export {
+  buildBrowserSsoAuth,
+  refreshBrowserSsoAuth,
+  clearSsoCookies,
+  harvestSsoCookiesSilently
+} from "./browserSso"
 export { buildOAuthOnPremAuth, clearOAuthOnPremTokens } from "./oauthOnPrem"

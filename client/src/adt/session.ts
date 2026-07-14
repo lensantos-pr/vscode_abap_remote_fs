@@ -22,3 +22,26 @@ export const isAuthExpired = (e: unknown): boolean => {
   if (typeof status === "number") return status === 401
   return /status code 401/i.test(String((e as any)?.message ?? e))
 }
+
+/**
+ * True for a session that has silently lapsed WITHOUT a clean 401 — what an SSO reverse proxy / IdP
+ * produces when it answers an expired session with a 200 HTML re-login page (or a SAML redirect)
+ * instead of 401. isAuthExpired (401-only) misses this, so the ADT XML parser is handed the login
+ * HTML where it expects the asx:abap/asx:values envelope and throws — leaving the object tree
+ * silently empty. The tell is either that parser crash or the HTML/SAML body itself.
+ *
+ * Callers MUST gate this on isSsoConnection: only browser_sso/kerberos carry a frozen credential a
+ * retry cannot recover. For basic/cert/oauth a stray parse error is not an expiry, and tearing the
+ * session down on it would strand a recoverable connection.
+ */
+export const isSessionLikelyExpired = (e: unknown): boolean => {
+  const err = e as any
+  const haystack = [err?.message, err?.response?.body, err?.body, typeof e === "string" ? e : ""]
+    .filter((v): v is string => typeof v === "string")
+    .join(" ")
+  return (
+    /asx:(abap|values)/i.test(haystack) || // ADT envelope missing -> login HTML fed to the XML parser
+    /<!doctype html|<html[\s>]/i.test(haystack) || // IdP / SAML re-login page in the body
+    /\/sap\/saml2\//i.test(haystack) // redirect to the SAML endpoint
+  )
+}

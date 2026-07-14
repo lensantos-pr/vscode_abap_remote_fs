@@ -1,5 +1,10 @@
-import { getOrCreateRoot, invalidateSession, isSsoConnection } from "../adt/conections"
-import { isAuthExpired } from "../adt/session"
+import {
+  getOrCreateRoot,
+  invalidateSession,
+  isSsoConnection,
+  renewSsoSession
+} from "../adt/conections"
+import { isAuthExpired, isSessionLikelyExpired } from "../adt/session"
 import {
   FileSystemError,
   FileChangeType,
@@ -199,6 +204,21 @@ export class FsProvider implements FileSystemProvider {
         )
       }
       return FileSystemError.NoPermissions(`Authentication failed for ${uri.authority} (HTTP 401).`)
+    }
+    // A silently-lapsed SSO session frequently answers with 200 + an IdP/SAML HTML page rather than a
+    // clean 401, so isAuthExpired misses it and the ADT XML parser crashes on the HTML ("asx:values")
+    // while the tree goes silently empty. Detect that non-401 signature — gated on isSsoConnection so
+    // an unrelated parse error never disturbs a basic/cert/oauth session — and attempt a SILENT
+    // background renewal (coalesced). If the corporate IdP still holds a live session this rebuilds the
+    // client and the next stat succeeds; if it needs interaction, renewSsoSession degrades to
+    // invalidateSession + a reconnect prompt on the next call. Unlike the clean-401 path above we do
+    // NOT tear down immediately, because renewal is non-destructive: it harvests a fresh session and
+    // rebuilds through the empty-fetcher path — it never replays the dead cookie or sends a sentinel.
+    if (isSsoConnection(uri.authority) && isSessionLikelyExpired(e)) {
+      void renewSsoSession(uri.authority)
+      return FileSystemError.Unavailable(
+        `Renewing expired SSO session for ${uri.authority}… retrying automatically. Reconnect if this persists.`
+      )
     }
     if (msg.includes("status code 403"))
       return FileSystemError.NoPermissions(
