@@ -288,6 +288,23 @@ describe("getSAPSystemInfo", () => {
     expect(info.currentClient).toBeNull()
   })
 
+  test("does not cache an all-empty (failed) fetch, so the next call re-queries", async () => {
+    // A dead/expired session makes every query throw, yielding an all-empty result. Caching that
+    // would pin the empty answer for the 24h TTL (the stale-info bug), so it must NOT be cached —
+    // a later call, once the session is healthy again, has to re-query.
+    const faultyClient = { runQuery: jest.fn().mockRejectedValue(new Error("session dead")) }
+    mockGetClient.mockReturnValue(faultyClient)
+    mockRemoteManagerGet.mockReturnValue(makeRemoteManager())
+
+    const first = await getSAPSystemInfo("dev100")
+    expect(first.systemType).toBe("Unknown") // empty result is still returned to the caller
+    const callsAfterFirst = (faultyClient.runQuery as jest.Mock).mock.calls.length
+
+    await getSAPSystemInfo("dev100")
+    // Not served from a poisoned cache — the queries run again.
+    expect((faultyClient.runQuery as jest.Mock).mock.calls.length).toBeGreaterThan(callsAfterFirst)
+  })
+
   test("queryTimestamp is a valid ISO string", async () => {
     mockGetClient.mockReturnValue(makeClient({}))
     mockRemoteManagerGet.mockReturnValue(makeRemoteManager())

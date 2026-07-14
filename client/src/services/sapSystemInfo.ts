@@ -296,11 +296,21 @@ export async function getSAPSystemInfo(
     console.warn("Failed to query timezone:", error)
   }
 
-  // Store in cache (always with full data)
-  systemInfoCache.set(cacheKey, {
-    data: result,
-    timestamp: now
-  })
+  // Only cache a result that actually resolved data. A fully-empty result means every query failed
+  // (typically an expired/dead session) — caching it would pin the empty answer for the whole 24h
+  // TTL, so skip it and let the next call re-query once the session is healthy again.
+  const hasData =
+    result.currentClient !== null ||
+    result.sapRelease !== "" ||
+    result.systemType !== "Unknown" ||
+    result.softwareComponents.length > 0 ||
+    result.timezone !== null
+  if (hasData) {
+    systemInfoCache.set(cacheKey, {
+      data: result,
+      timestamp: now
+    })
+  }
 
   // Return with or without components based on request
   if (!includeComponents) {

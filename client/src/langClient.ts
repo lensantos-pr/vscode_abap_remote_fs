@@ -177,27 +177,29 @@ async function getAuthHeaders(connId: string): Promise<AuthHeadersResponse | und
     }
     case "browser_sso": {
       const { log: libLog } = await import("./lib")
-      try {
-        libLog.debug(`[langClient] getAuthHeaders: resolving browser_sso cookies for ${connId}`)
-        const { buildBrowserSsoAuth, getSsoCookies } = await import("./auth/browserSso")
-        const result = await buildBrowserSsoAuth(connId, conn.url, conn.client, conn.browserSso)
-        if (result.headers) {
-          libLog.debug(`[langClient] getAuthHeaders: browser_sso capture resolved for ${connId}`)
-          return { httpHeaders: result.headers }
+      const { getSsoCookies, harvestSsoCookiesSilently } = await import("./auth/browserSso")
+      // Prefer a still-valid cached cookie.
+      let cookies = await getSsoCookies(connId)
+      if (cookies.length === 0) {
+        // The cookie has lapsed. This is a background (language-server) request, so it must NEVER
+        // pop a browser or paste page. Attempt a SILENT headless re-harvest: if the IdP still holds a
+        // live session it succeeds invisibly (mirroring the FS-side renewal), otherwise give up and
+        // let the server warn so the user reconnects — never an interactive capture from this path.
+        try {
+          libLog.debug(
+            `[langClient] getAuthHeaders: browser_sso cookies lapsed for ${connId}, attempting silent renewal`
+          )
+          cookies = await harvestSsoCookiesSilently(connId, conn.url, conn.client, conn.browserSso)
+          libLog.debug(`[langClient] getAuthHeaders: silent renewal succeeded for ${connId}`)
+        } catch (e) {
+          libLog.debug(
+            `[langClient] getAuthHeaders: silent renewal failed for ${connId}: ${errorMessage(e)} — reconnect needed`
+          )
+          return undefined
         }
-
-        const cookies = await getSsoCookies(connId)
-        const httpHeaders = buildCookieHeaders(cookies)
-        return httpHeaders ? { httpHeaders } : undefined
-      } catch (e) {
-        libLog.debug(
-          `[langClient] getAuthHeaders: browser_sso capture failed for ${connId}: ${errorMessage(e)}`
-        )
-        const { getSsoCookies } = await import("./auth/browserSso")
-        const cookies = await getSsoCookies(connId)
-        const httpHeaders = buildCookieHeaders(cookies)
-        return httpHeaders ? { httpHeaders } : undefined
       }
+      const httpHeaders = buildCookieHeaders(cookies)
+      return httpHeaders ? { httpHeaders } : undefined
     }
     case "cert": {
       const { log: libLog } = await import("./lib")
