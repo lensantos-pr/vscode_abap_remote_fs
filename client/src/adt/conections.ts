@@ -102,7 +102,9 @@ async function doRenewSsoSession(
     log(`Silently renewed SSO session for ${connId}`)
     return true
   } catch (e) {
-    log.debug(`[renew] Silent SSO renewal failed for ${connId}: ${String((e as any)?.message ?? e)}`)
+    log.debug(
+      `[renew] Silent SSO renewal failed for ${connId}: ${String((e as any)?.message ?? e)}`
+    )
     invalidateSession(connId) // degrade to the safe reconnect path
     return false
   }

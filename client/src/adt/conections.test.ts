@@ -285,10 +285,11 @@ describe("renewSsoSession", () => {
     asAuthMethod("browser_sso")
     let harvests = 0
     const harvest = jest.fn().mockImplementation(
-      () => new Promise<void>(res => {
-        harvests++
-        setTimeout(res, 10)
-      })
+      () =>
+        new Promise<void>(res => {
+          harvests++
+          setTimeout(res, 10)
+        })
     )
     const rebuild = jest.fn().mockResolvedValue(undefined)
     const results = await Promise.all([
