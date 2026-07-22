@@ -19,7 +19,7 @@
 import * as vscode from "vscode"
 
 const MARKETPLACE_URL =
-  "https://marketplace.visualstudio.com/items?itemName=murbani.vscode-abap-remote-fs&ssr=false#review-details"
+  "https://marketplace.visualstudio.com/items?itemName=pernod-ricard.leap-abap-fs&ssr=false#review-details"
 
 // ─── Global State Keys ───────────────────────────────────────────────────────
 

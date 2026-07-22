@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 import { log } from "../lib"
 import { command } from "../commands"
 const WALKTHROUGH_SHOWN_KEY = "abapfs.walkthroughShown"
-const EXTENSION_QUALIFIED_ID = "murbani.vscode-abap-remote-fs"
+const EXTENSION_QUALIFIED_ID = "pernod-ricard.leap-abap-fs"
 
 class WalkThroughCommands {
   @command("abapfs.showWalkThrough")

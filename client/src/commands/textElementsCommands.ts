@@ -222,7 +222,7 @@ export async function openTextElementsInSapGui(
     // Get extension URI (same as working embedded GUI)
     let extensionUri: vscode.Uri
     try {
-      const extension = vscode.extensions.getExtension("murbani.vscode-abap-remote-fs")
+      const extension = vscode.extensions.getExtension("pernod-ricard.leap-abap-fs")
       if (extension) {
         extensionUri = extension.extensionUri
       } else {

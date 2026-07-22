@@ -591,7 +591,7 @@ Contact your administrator to request access to this system.`
     try {
       // Use VS Code API to get extension version (same as other services)
       return (
-        vscode.extensions.getExtension("murbani.vscode-abap-remote-fs")?.packageJSON?.version ||
+        vscode.extensions.getExtension("pernod-ricard.leap-abap-fs")?.packageJSON?.version ||
         "0.0.0"
       )
     } catch (error) {

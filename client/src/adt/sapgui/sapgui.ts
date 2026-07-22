@@ -167,7 +167,7 @@ export async function openInGui(
         // Otherwise, open in webview panel
         let extensionUri: Uri
         try {
-          const extension = extensions.getExtension("murbani.vscode-abap-remote-fs")
+          const extension = extensions.getExtension("pernod-ricard.leap-abap-fs")
           extensionUri =
             extension?.extensionUri ||
             extensions.getExtension("abap-copilot")?.extensionUri ||
@@ -371,7 +371,7 @@ export class SapGui {
           // Get extension context more reliably
           let extensionUri: vscode.Uri
           try {
-            const extension = vscode.extensions.getExtension("murbani.vscode-abap-remote-fs")
+            const extension = vscode.extensions.getExtension("pernod-ricard.leap-abap-fs")
             if (extension) {
               extensionUri = extension.extensionUri
             } else {
