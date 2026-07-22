@@ -160,7 +160,7 @@ export class ABAPFSDocumentationTool implements vscode.LanguageModelTool<IDocume
     const { action, searchQuery, startLine = 1, lineCount = 50 } = options.input
 
     // Get extension path
-    const extension = vscode.extensions.getExtension("murbani.vscode-abap-remote-fs")
+    const extension = vscode.extensions.getExtension("pernod-ricard.leap-abap-fs")
     if (!extension) {
       throw new Error("ABAP FS extension not found")
     }

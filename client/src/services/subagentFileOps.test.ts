@@ -70,7 +70,7 @@ jest.mock("./subagentRegistry", () => ({
   getWorkspaceFolder: jest
     .fn()
     .mockReturnValue({ fsPath: "/workspace", toString: () => "/workspace" }),
-  getExtensionId: jest.fn().mockReturnValue("murbani.vscode-abap-remote-fs"),
+  getExtensionId: jest.fn().mockReturnValue("pernod-ricard.leap-abap-fs"),
   buildFullToolName: jest.fn((ext: string, t: string) => `${ext}_${t}`)
 }))
 

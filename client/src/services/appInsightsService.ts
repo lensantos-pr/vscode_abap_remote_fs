@@ -34,7 +34,7 @@ export class AppInsightsService {
 
     // Get extension version
     this.version =
-      vscode.extensions.getExtension("murbani.vscode-abap-remote-fs")?.packageJSON?.version ||
+      vscode.extensions.getExtension("pernod-ricard.leap-abap-fs")?.packageJSON?.version ||
       "unknown"
 
     // Defer initialization to avoid blocking the main extension activation flow
